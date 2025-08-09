@@ -1,9 +1,9 @@
 [package]
 name = "snaplock"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
+description = "临时离开电脑时有活动则锁屏"
+authors = ["OldSun"]
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,10 +16,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-
 [dependencies]
-tauri = { version = "2", features = [] }
+nokhwa = { version = "0.10.9", features = ["input-native", "output-wgpu"] }
+image = "0.25.6"
+dirs = "6.0.0"
+chrono = { version = "0.4.41", features = ["serde"] }
+
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
+rdev = "0.5.3"
+tokio = { version = "1", features = ["full"] }
+tauri-plugin-global-shortcut = "2.3.0"

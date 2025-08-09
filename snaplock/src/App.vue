@@ -1,40 +1,103 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-const greetMsg = ref("");
-const name = ref("");
+const cameraList = ref<string[]>([]);
+const selectedCamera = ref<number>(0);
+const monitoringStatus = ref<string>("空闲"); // '空闲', '准备中', '警戒中'
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
+const statusClass = computed(() => {
+  switch (monitoringStatus.value) {
+    case "警戒中":
+      return "status-active";
+    case "准备中":
+      return "status-pending";
+    default:
+      return "status-idle";
+  }
+});
+
+onMounted(async () => {
+  cameraList.value = await invoke<string[]>("get_camera_list");
+  listen<string>("monitoring_status_changed", (event) => {
+    monitoringStatus.value = event.payload;
+  });
+});
+
+async function toggleMonitoring() {
+  if (monitoringStatus.value === "空闲") {
+    try {
+      await invoke("start_monitoring_command", { cameraIndex: selectedCamera.value });
+    } catch (err) {
+      // 可以考虑在这里向用户显示一个错误通知
+    }
+  } else if (monitoringStatus.value === "警戒中") {
+    // 停止监控的逻辑由后端的全局热键处理
+    // 前端按钮仅用于启动
+  }
 }
 </script>
 
 <template>
   <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
+    <article>
+      <hgroup>
+        <h1>SnapLock</h1>
+        <h2 :class="statusClass">{{ monitoringStatus }}</h2>
+      </hgroup>
 
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
-    </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
+      <section>
+        <label for="cameraSelect">选择摄像头</label>
+        <select id="cameraSelect" v-model="selectedCamera">
+          <option v-for="(cam, index) in cameraList" :key="index" :value="index">
+            {{ cam }}
+          </option>
+        </select>
+      </section>
 
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
+      <section>
+        <button @click="toggleMonitoring" :disabled="monitoringStatus !== '空闲'">
+          {{ monitoringStatus === '空闲' ? '启动监控' : (monitoringStatus === '准备中' ? '准备中...' : '警戒中 (Alt+L 停止)') }}
+        </button>
+      </section>
+    </article>
   </main>
 </template>
+
+<style scoped>
+.status-active {
+  color: #1b5e20; /* 深绿色 */
+}
+.status-pending {
+  color: #ff6f00; /* 橙色 */
+}
+.status-idle {
+  color: #9e9e9e; /* 灰色 */
+}
+
+main.container {
+  max-width: 600px;
+  margin: auto;
+  padding: 2rem;
+}
+
+hgroup h1 {
+  margin-bottom: 0.2rem;
+}
+
+hgroup h2 {
+  margin-top: 0;
+}
+
+section {
+  margin-top: 1.5rem;
+}
+
+button {
+  width: 100%;
+}
+</style>
 
 <style scoped>
 .logo.vite:hover {
