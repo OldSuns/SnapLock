@@ -11,7 +11,6 @@ mod handlers;
 use crate::state::{AppState, MonitoringFlags};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::Manager;
 
 fn main() {
     let app_state = AppState::new(0);
@@ -38,8 +37,9 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window.app_handle().exit(0);
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                window.hide().unwrap();
             }
         })
         .invoke_handler(tauri::generate_handler![

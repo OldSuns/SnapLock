@@ -51,6 +51,9 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                             monitoring_flags_clone.set_monitoring_active(true);
                             app_handle_clone.emit("monitoring_status_changed", "警戒中").unwrap();
                             app_handle_clone.notification().builder().title("SnapLock").body("已进入警戒状态，正在监控活动").show().unwrap();
+                            if let Some(window) = app_handle_clone.get_webview_window("main") {
+                                let _ = window.hide();
+                            }
                             if let Err(e) = monitoring::start_monitoring(app_handle_clone.clone(), monitoring_flags_clone) {
                                 eprintln!("Failed to start monitoring: {}", e);
                                 if state.set_status(MonitoringState::Idle).is_err() {

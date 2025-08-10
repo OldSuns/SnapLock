@@ -14,7 +14,8 @@
       {
         "title": "SnapLock",
         "width": 500,
-        "height": 500
+        "height": 500,
+        "skipTaskbar": false
       }
     ],
     "security": {
