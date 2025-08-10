@@ -8,6 +8,9 @@
 
 ---
 
+<img width="614" height="653" alt="image" src="https://github.com/user-attachments/assets/abb448ee-1ccb-4519-8e51-d0daa4478341" />
+
+
 ## 📖 项目简介
 
 您是否曾短暂离开座位，却担心有人在您离开时偷看或操作您的电脑？传统的锁屏方式要么需要手动操作，要么依赖固定的超时时间，不够智能。

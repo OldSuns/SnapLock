@@ -11,6 +11,7 @@ mod handlers;
 use crate::state::{AppState, MonitoringFlags};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tauri_plugin_notification::NotificationExt;
 
 fn main() {
     let app_state = AppState::new(0);
@@ -27,6 +28,14 @@ fn main() {
         .manage(last_toggle_time)
         .setup(|app| {
             let handle = app.handle().clone();
+            
+            // 请求通知权限
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(e) = app.notification().request_permission() {
+                    eprintln!("Failed to request notification permission: {}", e);
+                }
+            }
             
             // Setup tray icon
             let _tray = app_setup::setup_system_tray(&handle)?;

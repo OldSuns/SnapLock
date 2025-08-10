@@ -10,6 +10,15 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
+/// Helper function to reset state to Idle with proper cleanup
+fn reset_to_idle_state(state: &AppState, app_handle: &AppHandle, reason: &str) {
+    println!("Resetting to idle state: {}", reason);
+    if state.set_status(MonitoringState::Idle).is_err() {
+        eprintln!("Failed to reset state to Idle: {}", reason);
+    }
+    app_handle.emit("monitoring_status_changed", "空闲").unwrap();
+}
+
 /// Toggles the monitoring state.
 pub async fn toggle_monitoring(app_handle: &AppHandle) {
     let state = app_handle.state::<AppState>();
@@ -46,27 +55,50 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                 tokio::spawn(async move {
                     tokio::time::sleep(PREPARATION_DELAY).await;
                     let state = app_handle_clone.state::<AppState>();
-                    if state.status() == MonitoringState::Preparing {
-                        if state.set_status(MonitoringState::Active).is_ok() {
-                            monitoring_flags_clone.set_monitoring_active(true);
-                            app_handle_clone.emit("monitoring_status_changed", "警戒中").unwrap();
-                            app_handle_clone.notification().builder().title("SnapLock").body("已进入警戒状态，正在监控活动").show().unwrap();
-                            if let Some(window) = app_handle_clone.get_webview_window("main") {
-                                let _ = window.hide();
-                            }
-                            if let Err(e) = monitoring::start_monitoring(app_handle_clone.clone(), monitoring_flags_clone) {
-                                eprintln!("Failed to start monitoring: {}", e);
-                                if state.set_status(MonitoringState::Idle).is_err() {
-                                    eprintln!("Failed to reset state to Idle after monitoring start failure.");
+                    
+                    // Double-check state is still Preparing (user might have cancelled)
+                    if state.status() != MonitoringState::Preparing {
+                        println!("Monitoring preparation cancelled, current state: {:?}", state.status());
+                        return;
+                    }
+
+                    // Attempt to transition to Active state
+                    if state.set_status(MonitoringState::Active).is_err() {
+                        eprintln!("Failed to transition to Active state");
+                        return;
+                    }
+
+                    // Try to start monitoring with proper error handling
+                    match monitoring::start_monitoring(app_handle_clone.clone(), monitoring_flags_clone.clone()) {
+                        Ok(monitoring_handle) => {
+                            // Atomically start monitoring and store handle
+                            if monitoring_flags_clone.start_monitoring_atomic(monitoring_handle) {
+                                // Success: emit status change and show notification
+                                app_handle_clone.emit("monitoring_status_changed", "警戒中").unwrap();
+                                
+                                if let Err(e) = app_handle_clone.notification()
+                                    .builder()
+                                    .title("SnapLock")
+                                    .body("已进入警戒状态，正在监控活动")
+                                    .show() {
+                                    eprintln!("Failed to show notification: {}", e);
                                 }
-                                app_handle_clone.emit("monitoring_status_changed", "空闲").unwrap();
+                                
+                                if let Some(window) = app_handle_clone.get_webview_window("main") {
+                                    let _ = window.hide();
+                                }
+                                
+                                println!("Monitoring started successfully");
+                            } else {
+                                // Failed to start monitoring atomically (already running)
+                                eprintln!("Failed to start monitoring: already active");
+                                reset_to_idle_state(&state, &app_handle_clone, "监控已在运行中");
                             }
-                        } else {
-                            // Transition to Active failed, reset to Idle
-                            if state.set_status(MonitoringState::Idle).is_err() {
-                                eprintln!("Failed to reset state to Idle after transition to Active failed.");
-                            }
-                            app_handle_clone.emit("monitoring_status_changed", "空闲").unwrap();
+                        }
+                        Err(e) => {
+                            // Failed to create monitoring thread
+                            eprintln!("Failed to start monitoring: {}", e);
+                            reset_to_idle_state(&state, &app_handle_clone, "监控启动失败");
                         }
                     }
                 });
@@ -74,12 +106,26 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
         }
         MonitoringState::Preparing | MonitoringState::Active => {
             let was_active = state.status() == MonitoringState::Active;
+            
+            // Stop monitoring thread and reset state
+            if was_active {
+                monitoring_flags.stop_monitoring_thread();
+            }
+            
             if state.set_status(MonitoringState::Idle).is_ok() {
-                monitoring_flags.set_monitoring_active(false);
                 app_handle.emit("monitoring_status_changed", "空闲").unwrap();
                 if was_active {
-                    app_handle.notification().builder().title("SnapLock").body("已退出警戒状态").show().unwrap();
+                    // 改进的系统通知调用，添加错误处理
+                    if let Err(e) = app_handle.notification()
+                        .builder()
+                        .title("SnapLock")
+                        .body("已退出警戒状态")
+                        .show() {
+                        eprintln!("Failed to show notification: {}", e);
+                    }
+                    
                 }
+                println!("Monitoring stopped successfully");
             }
         }
     }

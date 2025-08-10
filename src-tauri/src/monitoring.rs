@@ -2,17 +2,36 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::{camera, constants::EVENT_IGNORE_WINDOW_MS, state::{AppState, MonitoringFlags}};
+use crate::{camera, constants::EVENT_IGNORE_WINDOW_MS, state::{AppState, MonitoringFlags, MonitoringState}};
 use rdev::{listen, Event, EventType, Key};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Emitter};
 use tokio::{runtime::Runtime as TokioRuntime, task, time::sleep};
 
 pub fn lock_screen() {
-    if let Err(e) = Command::new("rundll32.exe")
+    println!("执行锁屏命令...");
+    match Command::new("rundll32.exe")
         .args(["user32.dll,LockWorkStation"])
         .spawn()
     {
-        eprintln!("Failed to execute screen lock command: {}", e);
+        Ok(mut child) => {
+            println!("锁屏命令已启动，进程ID: {:?}", child.id());
+            // 等待命令完成
+            match child.wait() {
+                Ok(status) => {
+                    if status.success() {
+                        println!("锁屏命令执行成功");
+                    } else {
+                        eprintln!("锁屏命令执行失败，退出码: {:?}", status.code());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("等待锁屏命令完成时发生错误: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("启动锁屏命令失败: {}", e);
+        }
     }
 }
 
@@ -38,7 +57,7 @@ pub fn start_monitoring(
 }
 
 /// The primary callback for `rdev` events.
-fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<MonitoringFlags>, rt: &TokioRuntime) {
+fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<MonitoringFlags>, _rt: &TokioRuntime) {
     // --- 状态检查 ---
     let monitoring_active = monitoring_flags.monitoring_active();
     let shortcut_in_progress = monitoring_flags.shortcut_in_progress();
@@ -48,39 +67,96 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
         .unwrap_or_default()
         .as_millis() as u64;
 
+    // 调试信息：记录所有事件（仅在监控激活时）
+    if monitoring_active {
+        println!("监控事件: {:?}, 监控状态: {}, 快捷键处理中: {}, 时间差: {}ms, 线程存活: {}",
+                event.event_type, monitoring_active, shortcut_in_progress,
+                current_time.saturating_sub(last_shortcut_time),
+                monitoring_flags.is_monitoring_thread_alive());
+    }
+
     // 1. 必须激活监控
-    // 2. 快捷键不能正在处理中
-    // 3. 必须在快捷键触发的忽略窗口之外
-    if !monitoring_active || shortcut_in_progress || current_time.saturating_sub(last_shortcut_time) < EVENT_IGNORE_WINDOW_MS {
+    if !monitoring_active {
+        return;
+    }
+
+    // 2. 检查监控线程是否仍然存活
+    if !monitoring_flags.is_monitoring_thread_alive() {
+        eprintln!("监控线程已终止，停止监控");
+        monitoring_flags.set_monitoring_active(false);
+        // 通知前端状态变化
+        let state = app_handle.state::<AppState>();
+        if state.set_status(MonitoringState::Idle).is_ok() {
+            app_handle.emit("monitoring_status_changed", "空闲").unwrap();
+        }
+        return;
+    }
+
+    // 3. 快捷键不能正在处理中
+    if shortcut_in_progress {
+        println!("忽略事件：快捷键处理中");
+        return;
+    }
+
+    // 4. 必须在快捷键触发的忽略窗口之外
+    if current_time.saturating_sub(last_shortcut_time) < EVENT_IGNORE_WINDOW_MS {
+        println!("忽略事件：在忽略窗口内 ({}ms)", current_time.saturating_sub(last_shortcut_time));
         return;
     }
 
     // --- 事件过滤 ---
     if handle_key_press(&event) {
-        return; // 如果是快捷键相关按键，则忽略
+        println!("忽略事件：快捷键相关按键");
+        return;
     }
 
     // --- 触发核心逻辑 ---
-    let app_handle_clone = app_handle.clone();
-    rt.spawn(async move {
-        trigger_lockdown(app_handle_clone).await;
-    });
-
-    // 禁用监控以防止重复触发
+    println!("触发锁定！事件类型: {:?}", event.event_type);
+    
+    // 立即停止监控以防止重复触发
     monitoring_flags.set_monitoring_active(false);
+    
+    let app_handle_clone = app_handle.clone();
+    
+    // 使用标准线程确保任务稳定执行，避免Tokio运行时的复杂性
+    std::thread::spawn(move || {
+        println!("锁定任务已启动...");
+        
+        // 创建新的Tokio运行时来执行异步操作
+        match tokio::runtime::Runtime::new() {
+            Ok(rt_inner) => {
+                println!("创建内部运行时成功");
+                rt_inner.block_on(async move {
+                    println!("开始执行锁定流程...");
+                    trigger_lockdown(app_handle_clone).await;
+                });
+                println!("锁定流程执行完成");
+            }
+            Err(e) => {
+                eprintln!("创建内部运行时失败: {}", e);
+            }
+        }
+    });
+    
+    println!("锁定任务句柄创建成功");
 }
 
 /// Handles key press events to filter out shortcut-related keys.
 /// Returns `true` if the event should be ignored.
 fn handle_key_press(event: &Event) -> bool {
     match &event.event_type {
-        EventType::KeyPress(key) | EventType::KeyRelease(key) => matches!(key, Key::KeyL | Key::Alt | Key::AltGr),
+        // 过滤Alt+L组合键相关的按键，防止快捷键触发熄屏
+        EventType::KeyPress(key) | EventType::KeyRelease(key) => {
+            matches!(key, Key::KeyL | Key::Alt | Key::AltGr)
+        },
         _ => false,
     }
 }
 
 /// Asynchronously triggers photo capture, screen lock, and application exit.
 async fn trigger_lockdown(app_handle: AppHandle) {
+    println!("=== 开始执行锁定流程 ===");
+    
     // --- 动态获取摄像头ID和保存路径 ---
     let (camera_id, save_path) = {
         let state = app_handle.state::<AppState>();
@@ -89,15 +165,23 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         (camera_id, save_path)
     };
 
-    println!("Monitoring triggered, using camera ID: {}", camera_id);
+    println!("监控触发，使用摄像头ID: {}", camera_id);
 
     // --- 异步执行拍照 ---
+    println!("开始拍照...");
     if let Err(e) = camera::take_photo(camera_id, save_path).await {
-        eprintln!("Failed to capture photo: {}", e);
+        eprintln!("拍照失败: {}", e);
+    } else {
+        println!("拍照完成");
     }
 
     // --- 锁屏并退出 ---
+    println!("准备执行锁屏...");
     lock_screen();
-    sleep(Duration::from_millis(500)).await; // 确保锁屏命令已发出
+    
+    println!("等待锁屏命令完成...");
+    sleep(Duration::from_millis(1000)).await; // 增加等待时间确保锁屏命令完成
+    
+    println!("准备退出程序...");
     std::process::exit(0);
 }

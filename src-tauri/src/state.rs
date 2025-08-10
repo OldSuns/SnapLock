@@ -97,6 +97,8 @@ pub struct MonitoringFlags {
     pub(crate) shortcut_in_progress: std::sync::atomic::AtomicBool,
     /// Timestamp of last shortcut activation (in milliseconds since epoch)
     pub(crate) last_shortcut_time: std::sync::atomic::AtomicU64,
+    /// Handle to the monitoring thread for lifecycle management
+    pub(crate) monitoring_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl MonitoringFlags {
@@ -105,6 +107,7 @@ impl MonitoringFlags {
             monitoring_active: std::sync::atomic::AtomicBool::new(false),
             shortcut_in_progress: std::sync::atomic::AtomicBool::new(false),
             last_shortcut_time: std::sync::atomic::AtomicU64::new(0),
+            monitoring_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -130,5 +133,48 @@ impl MonitoringFlags {
 
     pub fn set_last_shortcut_time(&self, value: u64) {
         self.last_shortcut_time.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Store the monitoring thread handle (used internally by start_monitoring_atomic)
+    #[allow(dead_code)]
+    pub fn set_monitoring_handle(&self, handle: tokio::task::JoinHandle<()>) {
+        *self.monitoring_handle.lock().unwrap() = Some(handle);
+    }
+
+    /// Check if monitoring thread is still running
+    pub fn is_monitoring_thread_alive(&self) -> bool {
+        if let Ok(handle_guard) = self.monitoring_handle.lock() {
+            if let Some(handle) = handle_guard.as_ref() {
+                !handle.is_finished()
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Stop the monitoring thread and clean up
+    pub fn stop_monitoring_thread(&self) {
+        if let Ok(mut handle_guard) = self.monitoring_handle.lock() {
+            if let Some(handle) = handle_guard.take() {
+                handle.abort();
+            }
+        }
+        self.set_monitoring_active(false);
+    }
+
+    /// Atomically start monitoring with proper state management
+    pub fn start_monitoring_atomic(&self, handle: tokio::task::JoinHandle<()>) -> bool {
+        // First check if already monitoring
+        if self.monitoring_active() {
+            handle.abort();
+            return false;
+        }
+
+        // Store handle and activate monitoring atomically
+        *self.monitoring_handle.lock().unwrap() = Some(handle);
+        self.set_monitoring_active(true);
+        true
     }
 }
