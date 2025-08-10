@@ -109,6 +109,10 @@ pnpm tauri dev
 
 如果您有任何建议或发现 Bug，请随时提交 [Issues](https://github.com/OldSuns/snaplock/issues) 或 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=OldSuns/SnapLock&type=Date)](https://www.star-history.com/#OldSuns/SnapLock&Date)
+
 ## 📄 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
