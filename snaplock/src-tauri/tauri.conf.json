@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "snaplock",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "identifier": "com.oldsun.snaplock",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "SnapLock",
-        "width": 400,
-        "height": 400
+        "width": 500,
+        "height": 500
       }
     ],
     "security": {

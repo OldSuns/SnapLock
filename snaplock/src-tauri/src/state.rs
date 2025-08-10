@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 /// Represents the monitoring status of the application.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitoringState {
     /// The application is idle and not monitoring for input.
     Idle,
@@ -11,10 +11,124 @@ pub enum MonitoringState {
     Active,
 }
 
+impl MonitoringState {
+    /// Transitions to a new state, enforcing valid state transitions.
+    ///
+    /// # Rules:
+    /// - `Idle` -> `Preparing`
+    /// - `Preparing` -> `Active` | `Idle`
+    /// - `Active` -> `Idle`
+    pub fn transition_to(
+        &self,
+        next_state: MonitoringState,
+    ) -> Result<MonitoringState, &'static str> {
+        match (self, next_state) {
+            // Idle can only transition to Preparing
+            (MonitoringState::Idle, MonitoringState::Preparing) => Ok(next_state),
+            // Preparing can transition to Active (success) or Idle (cancelled)
+            (MonitoringState::Preparing, MonitoringState::Active) => Ok(next_state),
+            (MonitoringState::Preparing, MonitoringState::Idle) => Ok(next_state),
+            // Active can only transition back to Idle
+            (MonitoringState::Active, MonitoringState::Idle) => Ok(next_state),
+            // All other transitions are invalid
+            _ => Err("Invalid state transition"),
+        }
+    }
+}
+
 /// Holds the shared state of the Tauri application.
 pub struct AppState {
     /// The current monitoring status, protected by a Mutex.
-    pub status: Mutex<MonitoringState>,
-    /// The index of the camera to be used for capturing photos.
-    pub camera_index: Mutex<usize>,
+    pub(crate) status: Mutex<MonitoringState>,
+    /// The ID of the camera to be used for capturing photos.
+    pub(crate) camera_id: Mutex<u32>,
+    /// The custom path to save photos, protected by a Mutex.
+    pub(crate) save_path: Mutex<Option<String>>,
+}
+
+impl AppState {
+    pub fn new(camera_id: u32) -> Self {
+        Self {
+            status: Mutex::new(MonitoringState::Idle),
+            camera_id: Mutex::new(camera_id),
+            save_path: Mutex::new(None),
+        }
+    }
+
+    pub fn status(&self) -> MonitoringState {
+        *self.status.lock().unwrap()
+    }
+
+    pub fn set_status(&self, new_status: MonitoringState) -> Result<(), &'static str> {
+        let mut status = self.status.lock().unwrap();
+        let current_status = *status;
+        match current_status.transition_to(new_status) {
+            Ok(state) => {
+                *status = state;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn camera_id(&self) -> u32 {
+        *self.camera_id.lock().unwrap()
+    }
+
+    pub fn set_camera_id(&self, id: u32) {
+        *self.camera_id.lock().unwrap() = id;
+    }
+
+    pub fn save_path(&self) -> Option<String> {
+        self.save_path.lock().unwrap().clone()
+    }
+
+    pub fn set_save_path(&self, path: Option<String>) {
+        *self.save_path.lock().unwrap() = path;
+    }
+}
+
+
+/// Holds the monitoring flags for the application.
+pub struct MonitoringFlags {
+    /// Flag indicating if monitoring is active
+    pub(crate) monitoring_active: std::sync::atomic::AtomicBool,
+    /// Flag indicating if shortcut processing is in progress
+    pub(crate) shortcut_in_progress: std::sync::atomic::AtomicBool,
+    /// Timestamp of last shortcut activation (in milliseconds since epoch)
+    pub(crate) last_shortcut_time: std::sync::atomic::AtomicU64,
+}
+
+impl MonitoringFlags {
+    pub fn new() -> Self {
+        Self {
+            monitoring_active: std::sync::atomic::AtomicBool::new(false),
+            shortcut_in_progress: std::sync::atomic::AtomicBool::new(false),
+            last_shortcut_time: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    pub fn monitoring_active(&self) -> bool {
+        self.monitoring_active.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_monitoring_active(&self, value: bool) {
+        self.monitoring_active.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn shortcut_in_progress(&self) -> bool {
+        self.shortcut_in_progress.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_shortcut_in_progress(&self, value: bool) {
+        self.shortcut_in_progress.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn last_shortcut_time(&self) -> u64 {
+        self.last_shortcut_time.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_last_shortcut_time(&self, value: u64) {
+        self.last_shortcut_time.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
 }

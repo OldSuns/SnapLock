@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from '@tauri-apps/plugin-dialog';
+import { desktopDir } from '@tauri-apps/api/path';
 
-const cameraList = ref<string[]>([]);
-const selectedCamera = ref<number>(0);
+interface CameraInfo {
+  id: number;
+  name: string;
+}
+
+const cameraList = ref<CameraInfo[]>([]);
+const selectedCameraId = ref<number>(0);
 const monitoringStatus = ref<string>("空闲"); // '空闲', '准备中', '警戒中'
+const savePath = ref<string>("");
 
 const statusClass = computed(() => {
   switch (monitoringStatus.value) {
@@ -18,8 +26,29 @@ const statusClass = computed(() => {
   }
 });
 
+watch(selectedCameraId, async (newId) => {
+  if (cameraList.value.length > 0) {
+    try {
+      await invoke("set_camera_id", { cameraId: newId });
+    } catch (error) {
+      console.error("Failed to set camera ID:", error);
+    }
+  }
+});
+
 onMounted(async () => {
-  cameraList.value = await invoke<string[]>("get_camera_list");
+  // 获取摄像头列表
+  cameraList.value = await invoke<CameraInfo[]>("get_camera_list");
+  if (cameraList.value.length > 0) {
+    selectedCameraId.value = cameraList.value[0].id;
+  }
+
+  // 设置默认保存路径为桌面
+  const desktop = await desktopDir();
+  savePath.value = desktop;
+  await invoke("set_save_path", { path: desktop });
+
+  // 监听状态变化
   listen<string>("monitoring_status_changed", (event) => {
     monitoringStatus.value = event.payload;
   });
@@ -28,13 +57,29 @@ onMounted(async () => {
 async function toggleMonitoring() {
   if (monitoringStatus.value === "空闲") {
     try {
-      await invoke("start_monitoring_command", { cameraIndex: selectedCamera.value });
+      await invoke("start_monitoring_command", { cameraId: selectedCameraId.value });
     } catch (err) {
-      // 可以考虑在这里向用户显示一个错误通知
+      // 可以在这里向用户显示一个错误通知
     }
-  } else if (monitoringStatus.value === "警戒中") {
-    // 停止监控的逻辑由后端的全局热键处理
-    // 前端按钮仅用于启动
+  }
+}
+
+async function selectSavePath() {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    defaultPath: savePath.value,
+    title: "选择照片保存位置"
+  });
+
+  if (typeof selected === 'string' && selected !== null) {
+    savePath.value = selected;
+    try {
+      await invoke("set_save_path", { path: selected });
+    } catch (error) {
+      console.error("Failed to set save path:", error);
+      alert("设置保存路径失败");
+    }
   }
 }
 </script>
@@ -49,11 +94,19 @@ async function toggleMonitoring() {
 
       <section>
         <label for="cameraSelect">选择摄像头</label>
-        <select id="cameraSelect" v-model="selectedCamera">
-          <option v-for="(cam, index) in cameraList" :key="index" :value="index">
-            {{ cam }}
+        <select id="cameraSelect" v-model="selectedCameraId">
+          <option v-for="cam in cameraList" :key="cam.id" :value="cam.id">
+            {{ cam.name }}
           </option>
         </select>
+      </section>
+
+      <section>
+        <label for="savePathInput">照片保存路径</label>
+        <div style="display: flex; align-items: center;">
+          <input type="text" id="savePathInput" :value="savePath" readonly style="flex-grow: 1; margin-right: 10px;">
+          <button @click="selectSavePath" style="width: auto; padding: 0.4em 0.8em;">...</button>
+        </div>
       </section>
 
       <section>

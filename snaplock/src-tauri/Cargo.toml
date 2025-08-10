@@ -25,8 +25,10 @@ chrono = { version = "0.4.41", features = ["serde"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2.0.0-beta.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rdev = "0.5.3"
 tokio = { version = "1", features = ["full"] }
 tauri-plugin-global-shortcut = "2.3.0"
+anyhow = "1.0"
