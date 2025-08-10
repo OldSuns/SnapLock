@@ -89,17 +89,15 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
         .unwrap_or_default()
         .as_millis() as u64;
 
-    // 改进的调试信息：记录所有事件类型，不仅仅是监控激活时
-    println!("收到事件: {:?}, 监控激活: {}, 快捷键处理中: {}, 时间差: {}ms",
-            event.event_type, monitoring_active, shortcut_in_progress,
-            current_time.saturating_sub(last_shortcut_time));
+    // 只在监控激活时记录事件日志
+    if monitoring_active {
+        println!("收到事件: {:?}, 监控激活: {}, 快捷键处理中: {}, 时间差: {}ms",
+                event.event_type, monitoring_active, shortcut_in_progress,
+                current_time.saturating_sub(last_shortcut_time));
+    }
 
     // 1. 必须激活监控
     if !monitoring_active {
-        // 增加更详细的调试信息
-        if matches!(event.event_type, EventType::KeyPress(_) | EventType::KeyRelease(_)) {
-            println!("监控未激活，忽略键盘事件");
-        }
         return;
     }
 
