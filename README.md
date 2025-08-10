@@ -1,7 +1,110 @@
-# Tauri + Vue + TypeScript
+# SnapLock
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+**一个智能的安全工具，当您离开时，若有活动则自动拍照并锁屏。**
 
-## Recommended IDE Setup
+[![构建状态](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
+[![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![最新版本](https://img.shields.io/github/v/release/OldSuns/snaplock)](https://github.com/OldSuns/snaplock/releases)
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+---
+
+## 📖 项目简介
+
+您是否曾短暂离开座位，却担心有人在您离开时偷看或操作您的电脑？传统的锁屏方式要么需要手动操作，要么依赖固定的超时时间，不够智能。
+
+**SnapLock** 解决了这个问题。它是一个轻量级的桌面应用，当您准备离开时，可以一键启动“警戒”模式。此后，它会在后台静默运行。一旦检测到任何键盘或鼠标活动（表明可能有人正在使用您的电脑），SnapLock 会立即通过摄像头拍摄一张照片，然后锁定您的计算机，最后自动退出。
+
+这个过程确保了在您不知情的情况下，任何对您电脑的物理访问都会被记录下来，并立即被阻止。
+
+## ✨ 核心功能
+
+*   **智能监控**: 在用户无操作后进入警戒模式，而非简单的定时锁屏。
+*   **活动触发**: 任何键盘或鼠标事件都会立即触发安全响应。
+*   **即时拍照**: 在锁屏前通过选定的摄像头捕捉一张照片，作为事件记录。
+*   **全局快捷键**: 使用 `Alt+L` 在任何地方都能快速启动或停止监控。
+*   **系统托盘运行**: 应用在后台运行，主界面可以随时隐藏，不干扰您的工作区。
+*   **高度可配置**: 支持在多个摄像头之间进行选择，并可以自定义照片的保存路径。
+*   **轻量高效**: 基于 Rust 和 Tauri 构建，资源占用极低。
+
+## ⚙️ 工作流程
+
+SnapLock 的设计哲学是“一次性任务，执行后即销毁”。它的工作流程如下：
+
+1.  **配置阶段**:
+    *   用户在主界面中，从下拉列表选择要使用的摄像头。
+    *   （可选）设置一个自定义的文件夹用于保存捕获的照片，默认为桌面。
+
+2.  **布防阶段 (Arming)**:
+    *   用户按下全局快捷键 `Alt+L` 或点击界面上的“启动监控”按钮。
+    *   应用状态变为“准备中”，并给予用户几秒钟的准备时间离开座位。
+
+3.  **警戒阶段 (Active)**:
+    *   准备时间结束后，应用进入“警戒中”状态，主窗口自动隐藏。
+    *   此时，SnapLock 在后台静默监听系统范围内的所有键盘和鼠标输入事件。
+
+4.  **触发与执行阶段 (Trigger & Action)**:
+    *   一旦检测到**任何**键盘或鼠标活动：
+        *   **拍照**: 立即通过选定的摄像头拍摄一张照片，并保存到指定路径。
+        *   **锁屏**: 执行系统命令锁定计算机屏幕。
+        *   **退出**: 完成任务后，应用进程会自动终止，不留任何后台服务。
+
+## 🚀 使用教程
+
+### 1. 安装
+
+您可以从我们的 [GitHub Releases](https://github.com/OldSuns/snaplock/releases) 页面下载最新的安装程序（例如 `SnapLock_x64_en-US.msi`）。
+
+### 2. 配置
+
+1.  启动 SnapLock。
+2.  在主界面的 **“选择摄像头”** 下拉菜单中，选择您希望使用的摄像头。
+3.  （可选）在 **“照片保存路径”** 旁边，点击 `...` 按钮，选择一个您希望保存快照的文件夹。
+
+### 3. 使用
+
+1.  当您准备临时离开电脑时，按下快捷键 `Alt+L`。
+2.  应用状态会变为“准备中”，您有几秒钟的时间离开。
+3.  当状态变为“警戒中”后，您可以放心离开。
+4.  如果有人在您离开时试图使用您的电脑，SnapLock 会立即拍照并锁屏。
+5.  您回来后，正常解锁电脑即可。捕获的照片可以在您之前设定的路径中找到。
+
+## 🛠️ 技术栈
+
+*   **后端**: [Rust](https://www.rust-lang.org/)
+    *   **框架**: [Tauri](https://tauri.app/)
+    *   **异步运行时**: [Tokio](https://tokio.rs/)
+    *   **摄像头控制**: [`nokhwa`](https://crates.io/crates/nokhwa)
+    *   **全局输入监听**: [`rdev`](https://crates.io/crates/rdev)
+*   **前端**:
+    *   **框架**: [Vue 3](https://vuejs.org/) with [TypeScript](https://www.typescriptlang.org/)
+    *   **构建工具**: [Vite](https://vitejs.dev/)
+    *   **CSS 框架**: [Pico.css](https://picocss.com/)
+
+## 💻 开发与贡献
+
+我们欢迎任何形式的贡献！
+
+### 环境准备
+
+*   [Node.js](https://nodejs.org/) 和 [pnpm](https://pnpm.io/)
+*   [Rust](https://www.rust-lang.org/tools/install) 环境
+
+### 运行开发环境
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/OldSuns/snaplock.git
+cd snaplock
+
+# 2. 安装前端依赖
+pnpm install
+
+# 3. 启动开发服务器
+pnpm tauri dev
+```
+
+如果您有任何建议或发现 Bug，请随时提交 [Issues](https://github.com/OldSuns/snaplock/issues) 或 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
+
+## 📄 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
