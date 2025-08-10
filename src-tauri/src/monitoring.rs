@@ -46,11 +46,33 @@ pub fn start_monitoring(
     let handle = rt.spawn_blocking(move || {
         let callback_handle = app_handle.clone();
         let flags_handle = monitoring_flags.clone();
+        
+        println!("Starting rdev event listener...");
+        
+        // 为错误处理创建额外的克隆
+        let error_callback_handle = callback_handle.clone();
+        let error_flags_handle = flags_handle.clone();
+        
+        // 改进错误处理：当rdev监听失败时，立即停止监控
         if let Err(error) = listen(move |event| {
             callback(event, &callback_handle, &flags_handle, &rt_clone);
         }) {
-            eprintln!("Error listening to input events: {:?}", error);
+            eprintln!("Critical error in rdev event listener: {:?}", error);
+            eprintln!("Stopping monitoring due to listener failure");
+            
+            // 立即停止监控状态
+            error_flags_handle.set_monitoring_active(false);
+            
+            // 通知前端状态变化
+            let state = error_callback_handle.state::<AppState>();
+            if state.set_status(MonitoringState::Idle).is_ok() {
+                error_callback_handle.emit("monitoring_status_changed", "空闲").unwrap_or_else(|e| {
+                    eprintln!("Failed to emit status change: {}", e);
+                });
+            }
         }
+        
+        println!("rdev event listener thread exiting");
     });
 
     Ok(handle)
@@ -67,16 +89,17 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
         .unwrap_or_default()
         .as_millis() as u64;
 
-    // 调试信息：记录所有事件（仅在监控激活时）
-    if monitoring_active {
-        println!("监控事件: {:?}, 监控状态: {}, 快捷键处理中: {}, 时间差: {}ms, 线程存活: {}",
-                event.event_type, monitoring_active, shortcut_in_progress,
-                current_time.saturating_sub(last_shortcut_time),
-                monitoring_flags.is_monitoring_thread_alive());
-    }
+    // 改进的调试信息：记录所有事件类型，不仅仅是监控激活时
+    println!("收到事件: {:?}, 监控激活: {}, 快捷键处理中: {}, 时间差: {}ms",
+            event.event_type, monitoring_active, shortcut_in_progress,
+            current_time.saturating_sub(last_shortcut_time));
 
     // 1. 必须激活监控
     if !monitoring_active {
+        // 增加更详细的调试信息
+        if matches!(event.event_type, EventType::KeyPress(_) | EventType::KeyRelease(_)) {
+            println!("监控未激活，忽略键盘事件");
+        }
         return;
     }
 
@@ -87,31 +110,35 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
         // 通知前端状态变化
         let state = app_handle.state::<AppState>();
         if state.set_status(MonitoringState::Idle).is_ok() {
-            app_handle.emit("monitoring_status_changed", "空闲").unwrap();
+            app_handle.emit("monitoring_status_changed", "空闲").unwrap_or_else(|e| {
+                eprintln!("Failed to emit status change: {}", e);
+            });
         }
         return;
     }
 
     // 3. 快捷键不能正在处理中
     if shortcut_in_progress {
-        println!("忽略事件：快捷键处理中");
+        println!("忽略事件：快捷键处理中 (剩余时间: {}ms)",
+                EVENT_IGNORE_WINDOW_MS.saturating_sub(current_time.saturating_sub(last_shortcut_time)));
         return;
     }
 
     // 4. 必须在快捷键触发的忽略窗口之外
     if current_time.saturating_sub(last_shortcut_time) < EVENT_IGNORE_WINDOW_MS {
-        println!("忽略事件：在忽略窗口内 ({}ms)", current_time.saturating_sub(last_shortcut_time));
+        println!("忽略事件：在忽略窗口内 (剩余: {}ms)",
+                EVENT_IGNORE_WINDOW_MS - current_time.saturating_sub(last_shortcut_time));
         return;
     }
 
     // --- 事件过滤 ---
     if handle_key_press(&event) {
-        println!("忽略事件：快捷键相关按键");
+        println!("忽略事件：快捷键相关按键 ({:?})", event.event_type);
         return;
     }
 
     // --- 触发核心逻辑 ---
-    println!("触发锁定！事件类型: {:?}", event.event_type);
+    println!("✓ 触发锁定！事件类型: {:?}", event.event_type);
     
     // 立即停止监控以防止重复触发
     monitoring_flags.set_monitoring_active(false);
@@ -147,7 +174,11 @@ fn handle_key_press(event: &Event) -> bool {
     match &event.event_type {
         // 过滤Alt+L组合键相关的按键，防止快捷键触发熄屏
         EventType::KeyPress(key) | EventType::KeyRelease(key) => {
-            matches!(key, Key::KeyL | Key::Alt | Key::AltGr)
+            let should_ignore = matches!(key, Key::KeyL | Key::Alt | Key::AltGr);
+            if should_ignore {
+                println!("过滤快捷键相关按键: {:?}", key);
+            }
+            should_ignore
         },
         _ => false,
     }
@@ -156,6 +187,14 @@ fn handle_key_press(event: &Event) -> bool {
 /// Asynchronously triggers photo capture, screen lock, and application exit.
 async fn trigger_lockdown(app_handle: AppHandle) {
     println!("=== 开始执行锁定流程 ===");
+    
+    // 通知前端状态变化
+    let state = app_handle.state::<AppState>();
+    if state.set_status(MonitoringState::Idle).is_ok() {
+        app_handle.emit("monitoring_status_changed", "锁定中").unwrap_or_else(|e| {
+            eprintln!("Failed to emit lockdown status: {}", e);
+        });
+    }
     
     // --- 动态获取摄像头ID和保存路径 ---
     let (camera_id, save_path) = {

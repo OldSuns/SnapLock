@@ -24,9 +24,17 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
     let state = app_handle.state::<AppState>();
     let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
 
+    println!("切换监控状态请求，当前状态: {:?}", state.status());
+
+    // 执行健康检查
+    if !monitoring_flags.health_check() {
+        println!("健康检查失败，尝试修复状态");
+    }
+
     // Debounce shortcut
     let mut last_toggle_time = app_handle.state::<Arc<std::sync::Mutex<Instant>>>().inner().lock().unwrap();
     if last_toggle_time.elapsed() < SHORTCUT_DEBOUNCE_TIME {
+        println!("快捷键防抖，忽略请求");
         return;
     }
     *last_toggle_time = Instant::now();
@@ -39,10 +47,13 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
     monitoring_flags.set_last_shortcut_time(current_time);
     monitoring_flags.set_shortcut_in_progress(true);
 
+    println!("设置快捷键处理标志，时间戳: {}", current_time);
+
     let flags_for_clear = monitoring_flags.clone();
     tokio::spawn(async move {
         tokio::time::sleep(SHORTCUT_FLAG_CLEAR_DELAY).await;
         flags_for_clear.set_shortcut_in_progress(false);
+        println!("清除快捷键处理标志");
     });
 
     match state.status() {
@@ -69,13 +80,16 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                     }
 
                     // Try to start monitoring with proper error handling
+                    println!("尝试启动监控线程...");
                     match monitoring::start_monitoring(app_handle_clone.clone(), monitoring_flags_clone.clone()) {
                         Ok(monitoring_handle) => {
+                            println!("监控线程创建成功，尝试原子性启动...");
                             // Atomically start monitoring and store handle
                             if monitoring_flags_clone.start_monitoring_atomic(monitoring_handle) {
                                 // Success: emit status change and show notification
                                 app_handle_clone.emit("monitoring_status_changed", "警戒中").unwrap();
                                 
+                                println!("监控成功启动，发送通知...");
                                 if let Err(e) = app_handle_clone.notification()
                                     .builder()
                                     .title("SnapLock")
@@ -88,16 +102,16 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                                     let _ = window.hide();
                                 }
                                 
-                                println!("Monitoring started successfully");
+                                println!("✓ 监控启动成功");
                             } else {
                                 // Failed to start monitoring atomically (already running)
-                                eprintln!("Failed to start monitoring: already active");
+                                eprintln!("原子性启动失败：监控已在运行中");
                                 reset_to_idle_state(&state, &app_handle_clone, "监控已在运行中");
                             }
                         }
                         Err(e) => {
                             // Failed to create monitoring thread
-                            eprintln!("Failed to start monitoring: {}", e);
+                            eprintln!("监控线程创建失败: {}", e);
                             reset_to_idle_state(&state, &app_handle_clone, "监控启动失败");
                         }
                     }

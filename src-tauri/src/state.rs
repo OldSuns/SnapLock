@@ -156,25 +156,64 @@ impl MonitoringFlags {
 
     /// Stop the monitoring thread and clean up
     pub fn stop_monitoring_thread(&self) {
+        println!("停止监控线程...");
         if let Ok(mut handle_guard) = self.monitoring_handle.lock() {
             if let Some(handle) = handle_guard.take() {
-                handle.abort();
+                if !handle.is_finished() {
+                    println!("中止监控线程");
+                    handle.abort();
+                } else {
+                    println!("监控线程已经结束");
+                }
+            } else {
+                println!("没有找到监控线程句柄");
             }
         }
         self.set_monitoring_active(false);
+        println!("监控状态已重置为非激活");
     }
 
     /// Atomically start monitoring with proper state management
     pub fn start_monitoring_atomic(&self, handle: tokio::task::JoinHandle<()>) -> bool {
+        println!("尝试原子性启动监控...");
+        
         // First check if already monitoring
         if self.monitoring_active() {
+            println!("监控已经在运行中，中止新的监控线程");
             handle.abort();
             return false;
         }
 
         // Store handle and activate monitoring atomically
-        *self.monitoring_handle.lock().unwrap() = Some(handle);
-        self.set_monitoring_active(true);
-        true
+        if let Ok(mut handle_guard) = self.monitoring_handle.lock() {
+            *handle_guard = Some(handle);
+            self.set_monitoring_active(true);
+            println!("监控线程已启动并激活");
+            true
+        } else {
+            println!("无法获取监控句柄锁，启动失败");
+            handle.abort();
+            false
+        }
+    }
+
+    /// 健康检查：验证监控状态的一致性
+    pub fn health_check(&self) -> bool {
+        let monitoring_active = self.monitoring_active();
+        let thread_alive = self.is_monitoring_thread_alive();
+        
+        let is_healthy = monitoring_active == thread_alive;
+        
+        if !is_healthy {
+            println!("监控健康检查失败: 监控激活={}, 线程存活={}", monitoring_active, thread_alive);
+            
+            // 自动修复不一致的状态
+            if monitoring_active && !thread_alive {
+                println!("检测到监控激活但线程已死，重置监控状态");
+                self.set_monitoring_active(false);
+            }
+        }
+        
+        is_healthy
     }
 }

@@ -3,6 +3,27 @@
 version = 4
 
 [[package]]
+name = "SnapLock"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "image",
+ "nokhwa",
+ "rdev",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tokio",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4678,27 +4699,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-
-[[package]]
-name = "snaplock"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "image",
- "nokhwa",
- "rdev",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tokio",
-]
 
 [[package]]
 name = "socket2"
