@@ -55,7 +55,8 @@ fn main() {
             handlers::start_monitoring_command,
             camera::get_camera_list,
             handlers::set_camera_id,
-            camera::set_save_path
+            handlers::set_save_path,
+            handlers::set_exit_on_lock
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

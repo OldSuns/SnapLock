@@ -201,15 +201,6 @@ pub async fn take_photo(camera_id: u32, save_path: Option<String>) -> Result<Str
     .await
     .map_err(|e| format!("Task join error: {}", e))? // Handle task join error
 }
-use crate::state::AppState;
 
-/// Sets the custom save path for photos.
-///
-/// # Arguments
-/// * `path` - The new save path.
-/// * `state` - The application state.
-#[command]
-pub fn set_save_path(path: String, state: tauri::State<AppState>) -> Result<(), String> {
-    state.set_save_path(Some(path));
-    Ok(())
-}
+
+

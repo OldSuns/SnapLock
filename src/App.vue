@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from '@tauri-apps/plugin-dialog';
 import { desktopDir } from '@tauri-apps/api/path';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 interface CameraInfo {
   id: number;
@@ -14,6 +15,106 @@ const cameraList = ref<CameraInfo[]>([]);
 const selectedCameraId = ref<number>(0);
 const monitoringStatus = ref<string>("空闲"); // '空闲', '准备中', '警戒中'
 const savePath = ref<string>("");
+const exitOnLock = ref(true);
+
+// 摄像头预览相关
+import { onBeforeUnmount, nextTick } from "vue";
+const previewActive = ref(false);
+const previewError = ref<string>("");
+const videoEl = ref<HTMLVideoElement | null>(null);
+let previewStream: MediaStream | null = null;
+
+// === 预览相关改动开始 ===
+async function ensureCameraPermission(): Promise<void> {
+  // 若还没授权，label 会是空串；临时开一下获取权限再关掉
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const hasLabel = devs.some(d => d.kind === "videoinput" && d.label);
+  if (hasLabel) return;
+  const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  tmp.getTracks().forEach(t => t.stop());
+}
+
+async function pickDeviceIdBySelection(): Promise<string | null> {
+  await ensureCameraPermission();
+
+  const cam = cameraList.value.find(c => c.id === selectedCameraId.value);
+  const devices = (await navigator.mediaDevices.enumerateDevices())
+    .filter(d => d.kind === "videoinput");
+
+  if (devices.length === 0) return null;
+
+  // 1) 名称模糊匹配（授权后才有 label）
+  if (cam?.name) {
+    const name = cam.name.toLowerCase().trim();
+    const byName = devices.find(d => (d.label || "").toLowerCase().includes(name));
+    if (byName) return byName.deviceId;
+  }
+
+  // 2) 索引回退：后端 id 即 index（越界则回第一个）
+  const idx = Number.isInteger(selectedCameraId.value) ? selectedCameraId.value : 0;
+  const byIndex = devices[idx] ?? devices[0];
+  return byIndex.deviceId;
+}
+
+async function startPreview() {
+  previewError.value = "";
+  previewActive.value = false;
+  stopPreview();
+
+  // 监控非空闲时不预览，避免与后端占用冲突
+  if (monitoringStatus.value !== "空闲") return;
+
+  try {
+    const deviceId = await pickDeviceIdBySelection();
+    if (!deviceId) {
+      previewError.value = "未找到可用摄像头";
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    previewStream = stream;
+    await nextTick();
+    if (videoEl.value) {
+      videoEl.value.srcObject = stream;
+      await videoEl.value.play().catch(() => { });
+    }
+    previewActive.value = true;
+  } catch (e: any) {
+    previewError.value = "无法打开摄像头预览：" + (e?.message || e);
+    stopPreview();
+  }
+}
+// === 预览相关改动结束 ===
+
+function stopPreview() {
+  previewActive.value = false;
+  if (previewStream) {
+    previewStream.getTracks().forEach(track => track.stop());
+    previewStream = null;
+  }
+  if (videoEl.value) {
+    videoEl.value.srcObject = null;
+  }
+}
+
+watch(selectedCameraId, () => {
+  if (previewActive.value) {
+    startPreview();
+  }
+});
+
+watch(monitoringStatus, (val) => {
+  // 监控非空闲时自动关闭预览
+  if (val !== "空闲" && previewActive.value) {
+    stopPreview();
+  }
+});
+
+onBeforeUnmount(() => {
+  stopPreview();
+});
 
 const statusClass = computed(() => {
   switch (monitoringStatus.value) {
@@ -36,6 +137,14 @@ watch(selectedCameraId, async (newId) => {
   }
 });
 
+watch(exitOnLock, async (newVal) => {
+  try {
+    await invoke("set_exit_on_lock", { exit: newVal });
+  } catch (error) {
+    console.error("Failed to set exit_on_lock:", error);
+  }
+});
+
 onMounted(async () => {
   // 获取摄像头列表
   cameraList.value = await invoke<CameraInfo[]>("get_camera_list");
@@ -52,6 +161,19 @@ onMounted(async () => {
   listen<string>("monitoring_status_changed", (event) => {
     monitoringStatus.value = event.payload;
   });
+
+  // 监听窗口关闭：先停止预览，再允许关闭
+  const appWin = getCurrentWindow();
+  const unlistenClose = await appWin.onCloseRequested(async () => {
+    await stopPreview();
+    // 不调用 preventDefault：让窗口继续关闭
+  });
+
+  // 组件卸载时，清理监听
+  onBeforeUnmount(async () => {
+    await unlistenClose?.();
+  });
+
 });
 
 async function toggleMonitoring() {
@@ -92,6 +214,7 @@ async function selectSavePath() {
         <h2 :class="statusClass">{{ monitoringStatus }}</h2>
       </hgroup>
 
+
       <section>
         <label for="cameraSelect">选择摄像头</label>
         <select id="cameraSelect" v-model="selectedCameraId">
@@ -101,12 +224,40 @@ async function selectSavePath() {
         </select>
       </section>
 
+
+      <!-- 预览区块：NEW -->
+      <section>
+        <label>摄像头预览</label>
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+          <button @click="previewActive ? stopPreview() : startPreview()"
+            :disabled="monitoringStatus !== '空闲' && !previewActive">
+            {{ previewActive ? '停止预览' : '开启预览' }}
+          </button>
+          <small v-if="monitoringStatus !== '空闲' && !previewActive" style="opacity:.7;">
+            监控进行中，已暂停预览
+          </small>
+        </div>
+
+        <div v-show="previewActive" style="border:1px solid #ddd;border-radius:12px;overflow:hidden;background:#000;">
+          <video ref="videoEl" autoplay playsinline muted
+            style="width:100%;max-height:320px;display:block;object-fit:cover;"></video>
+        </div>
+        <p v-if="previewError" style="color:#d32f2f; margin-top:6px;">{{ previewError }}</p>
+      </section>
+
       <section>
         <label for="savePathInput">照片保存路径</label>
         <div style="display: flex; align-items: center;">
           <input type="text" id="savePathInput" :value="savePath" readonly style="flex-grow: 1; margin-right: 10px;">
           <button @click="selectSavePath" style="width: auto; padding: 0.4em 0.8em;">...</button>
         </div>
+      </section>
+
+      <section>
+        <label>
+          <input type="checkbox" v-model="exitOnLock" role="switch">
+          锁屏后退出程序
+        </label>
       </section>
 
       <section>

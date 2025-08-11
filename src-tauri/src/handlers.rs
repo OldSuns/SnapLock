@@ -154,6 +154,26 @@ pub fn set_camera_id(app_handle: tauri::AppHandle, camera_id: u32) -> Result<(),
     Ok(())
 }
 
+
+
+/// Sets the custom save path for photos.
+#[tauri::command]
+pub fn set_save_path(app_handle: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    state.set_save_path(path.clone());
+    println!("Save path updated to: {:?}", path);
+    Ok(())
+}
+
+/// Sets whether the app should exit after locking the screen.
+#[tauri::command]
+pub fn set_exit_on_lock(app_handle: tauri::AppHandle, exit: bool) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    *state.exit_on_lock.lock().unwrap() = exit;
+    println!("Exit on lock setting updated to: {}", exit);
+    Ok(())
+}
+
 /// A Tauri command to start or stop the monitoring process from the frontend.
 #[tauri::command]
 pub async fn start_monitoring_command(app_handle: AppHandle, camera_id: u32) {

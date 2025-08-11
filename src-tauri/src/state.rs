@@ -36,7 +36,6 @@ impl MonitoringState {
     }
 }
 
-/// Holds the shared state of the Tauri application.
 pub struct AppState {
     /// The current monitoring status, protected by a Mutex.
     pub(crate) status: Mutex<MonitoringState>,
@@ -44,6 +43,8 @@ pub struct AppState {
     pub(crate) camera_id: Mutex<u32>,
     /// The custom path to save photos, protected by a Mutex.
     pub(crate) save_path: Mutex<Option<String>>,
+    /// Determines whether the app should exit after locking the screen.
+    pub(crate) exit_on_lock: Mutex<bool>,
 }
 
 impl AppState {
@@ -52,6 +53,7 @@ impl AppState {
             status: Mutex::new(MonitoringState::Idle),
             camera_id: Mutex::new(camera_id),
             save_path: Mutex::new(None),
+            exit_on_lock: Mutex::new(true), // Default to true to exit on lock
         }
     }
 

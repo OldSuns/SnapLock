@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::{camera, constants::EVENT_IGNORE_WINDOW_MS, state::{AppState, MonitoringFlags, MonitoringState}};
 use rdev::{listen, Event, EventType, Key};
 use tauri::{AppHandle, Manager, Emitter};
+use tauri_plugin_notification::NotificationExt;
 use tokio::{runtime::Runtime as TokioRuntime, task, time::sleep};
 
 pub fn lock_screen() {
@@ -185,24 +186,18 @@ fn handle_key_press(event: &Event) -> bool {
 /// Asynchronously triggers photo capture, screen lock, and application exit.
 async fn trigger_lockdown(app_handle: AppHandle) {
     println!("=== 开始执行锁定流程 ===");
-    
-    // 通知前端状态变化
+
     let state = app_handle.state::<AppState>();
-    if state.set_status(MonitoringState::Idle).is_ok() {
-        app_handle.emit("monitoring_status_changed", "锁定中").unwrap_or_else(|e| {
-            eprintln!("Failed to emit lockdown status: {}", e);
-        });
-    }
-    
-    // --- 动态获取摄像头ID和保存路径 ---
-    let (camera_id, save_path) = {
-        let state = app_handle.state::<AppState>();
+
+    // --- 动态获取摄像头ID、保存路径和退出设置 ---
+    let (camera_id, save_path, exit_on_lock) = {
         let camera_id = state.camera_id();
         let save_path = state.save_path();
-        (camera_id, save_path)
+        let exit_on_lock = *state.exit_on_lock.lock().unwrap();
+        (camera_id, save_path, exit_on_lock)
     };
 
-    println!("监控触发，使用摄像头ID: {}", camera_id);
+    println!("监控触发，使用摄像头ID: {}，锁屏后退出: {}", camera_id, exit_on_lock);
 
     // --- 异步执行拍照 ---
     println!("开始拍照...");
@@ -212,13 +207,31 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         println!("拍照完成");
     }
 
-    // --- 锁屏并退出 ---
+    // --- 锁屏 ---
     println!("准备执行锁屏...");
     lock_screen();
     
     println!("等待锁屏命令完成...");
     sleep(Duration::from_millis(1000)).await; // 增加等待时间确保锁屏命令完成
-    
-    println!("准备退出程序...");
-    std::process::exit(0);
+
+    // --- 根据设置决定退出或重置 ---
+    if exit_on_lock {
+        println!("准备退出程序...");
+        std::process::exit(0);
+    } else {
+        println!("任务完成，重置状态为空闲...");
+        if state.set_status(MonitoringState::Idle).is_ok() {
+            app_handle.emit("monitoring_status_changed", "空闲").unwrap_or_else(|e| {
+                eprintln!("Failed to emit status change: {}", e);
+            });
+            use tauri_plugin_notification::NotificationExt;
+            if let Err(e) = app_handle.notification()
+                .builder()
+                .title("SnapLock")
+                .body("已拍照并锁定，系统返回待机状态。")
+                .show() {
+                eprintln!("Failed to show notification: {}", e);
+            }
+        }
+    }
 }
