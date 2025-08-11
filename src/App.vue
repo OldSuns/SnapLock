@@ -109,13 +109,17 @@ onMounted(async () => {
   tempSavePath.value = desktop;
   await invoke("set_save_path", { path: desktop });
 
+  // 获取当前快捷键
   try {
     currentShortcut.value = await invoke<string>("get_shortcut_key");
     tempShortcut.value = currentShortcut.value;
-  } catch { }
+  } catch (error) {
+    console.error("Failed to get shortcut key:", error);
+  }
 
-  listen<string>("monitoring_status_changed", (e) => {
-    monitoringStatus.value = e.payload;
+  // 监听状态变化
+  listen<string>("monitoring_status_changed", (event) => {
+    monitoringStatus.value = event.payload;
   });
 
   const appWin = getCurrentWindow();
@@ -183,57 +187,125 @@ async function saveShortcut() {
     if (tempShortcut.value !== currentShortcut.value && validateShortcut(tempShortcut.value)) {
       await invoke("set_shortcut_key", { shortcut: tempShortcut.value });
       currentShortcut.value = tempShortcut.value;
+      console.log("快捷键已更新为:", tempShortcut.value);
     }
-  } catch (e) { alert(`快捷键保存失败: ${e}`); tempShortcut.value = currentShortcut.value; }
+  } catch (error) {
+    console.error("Failed to save shortcut:", error);
+    alert(`快捷键保存失败: ${error}`);
+    // 恢复到之前的值
+    tempShortcut.value = currentShortcut.value;
+  }
 }
+
 async function savePathSetting() {
   try {
     if (tempSavePath.value !== savePath.value) {
       await invoke("set_save_path", { path: tempSavePath.value });
       savePath.value = tempSavePath.value;
+      console.log("保存路径已更新为:", tempSavePath.value);
     }
-  } catch (e) { alert(`保存路径设置失败: ${e}`); tempSavePath.value = savePath.value; }
+  } catch (error) {
+    console.error("Failed to save path:", error);
+    alert(`保存路径设置失败: ${error}`);
+    // 恢复到之前的值
+    tempSavePath.value = savePath.value;
+  }
 }
 
 async function startCaptureShortcut() {
   isCapturingShortcut.value = true;
   tempShortcut.value = "按下快捷键...";
-  try { await invoke("disable_shortcuts"); } catch { }
-  nextTick(() => (document.querySelector(".shortcut-input") as HTMLInputElement | null)?.focus());
+  
+  // 禁用全局快捷键
+  try {
+    await invoke("disable_shortcuts");
+  } catch (error) {
+    console.error("Failed to disable shortcuts:", error);
+  }
+  
+  // 确保输入框获得焦点
+  nextTick(() => {
+    const input = document.querySelector('.shortcut-input') as HTMLInputElement;
+    if (input) {
+      input.focus();
+    }
+  });
 }
+
 async function handleShortcutKeyDown(event: KeyboardEvent) {
   if (!isCapturingShortcut.value) return;
-  event.preventDefault(); event.stopPropagation();
+  
+  event.preventDefault();
+  event.stopPropagation();
+  
   const keys: string[] = [];
-  if (event.ctrlKey) keys.push("Ctrl");
-  if (event.altKey) keys.push("Alt");
-  if (event.shiftKey) keys.push("Shift");
-  if (event.metaKey) keys.push("Meta");
-  if (!["Control", "Alt", "Shift", "Meta"].includes(event.key)) {
+  
+  // 添加修饰键
+  if (event.ctrlKey) keys.push('Ctrl');
+  if (event.altKey) keys.push('Alt');
+  if (event.shiftKey) keys.push('Shift');
+  if (event.metaKey) keys.push('Meta');
+  
+  // 添加主键（非修饰键）
+  if (!['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
     let mainKey = event.key;
-    if (mainKey === " ") mainKey = "Space";
+    
+    // 标准化一些特殊键名
+    if (mainKey === ' ') mainKey = 'Space';
     else if (mainKey.length === 1) mainKey = mainKey.toUpperCase();
+    
     keys.push(mainKey);
+    
+    // 只有在有修饰键和主键时才完成捕获
     if (keys.length >= 2) {
-      tempShortcut.value = keys.join("+");
+      tempShortcut.value = keys.join('+');
       isCapturingShortcut.value = false;
-      try { await invoke("enable_shortcuts"); } catch { }
+      
+      // 重新启用全局快捷键
+      try {
+        await invoke("enable_shortcuts");
+      } catch (error) {
+        console.error("Failed to enable shortcuts:", error);
+      }
+      
+      // 立即保存快捷键
       await saveShortcut();
     }
   }
 }
+
 async function cancelCaptureShortcut() {
   isCapturingShortcut.value = false;
   tempShortcut.value = currentShortcut.value;
-  try { await invoke("enable_shortcuts"); } catch { }
+  
+  // 重新启用全局快捷键
+  try {
+    await invoke("enable_shortcuts");
+  } catch (error) {
+    console.error("Failed to enable shortcuts:", error);
+  }
 }
+
 function validateShortcut(shortcut: string): boolean {
   if (!shortcut || shortcut === "按下快捷键...") return false;
-  const parts = shortcut.split("+"); if (parts.length < 2) return false;
-  const modifiers = parts.slice(0, -1); const mainKey = parts.at(-1)!;
-  const validModifiers = ["Ctrl", "Alt", "Shift", "Meta", "Cmd"];
+  
+  const parts = shortcut.split('+');
+  if (parts.length < 2) return false;
+  
+  const modifiers = parts.slice(0, -1);
+  const mainKey = parts[parts.length - 1];
+  
+  // 检查修饰键是否有效
+  const validModifiers = ['Ctrl', 'Alt', 'Shift', 'Meta', 'Cmd'];
+  for (const modifier of modifiers) {
+    if (!validModifiers.includes(modifier)) return false;
+  }
+  
+  // 检查主键是否有效（不能是修饰键）
   if (validModifiers.includes(mainKey)) return false;
-  return modifiers.every(m => validModifiers.includes(m));
+  if (!mainKey || mainKey.trim() === '') return false;
+  
+  return true;
 }
 </script>
 
