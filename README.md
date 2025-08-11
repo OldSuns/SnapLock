@@ -8,7 +8,7 @@
 
 ---
 
-<img width="493" height="497" alt="image" src="https://github.com/user-attachments/assets/305f5a4d-f161-4044-9b55-eec7ada12c88" />
+<img width="1090" height="1020" alt="image" src="https://github.com/user-attachments/assets/92cceb36-7db3-4a70-94f8-f72d32af086b" />
 
 ## 📖 项目简介
 
@@ -30,7 +30,7 @@
 
 ## ⚙️ 工作流程
 
-SnapLock 的设计哲学是“一次性任务，执行后即销毁”。它的工作流程如下：
+SnapLock 的工作流程如下：
 
 1.  **配置阶段**:
     *   用户在主界面中，从下拉列表选择要使用的摄像头。
@@ -38,7 +38,7 @@ SnapLock 的设计哲学是“一次性任务，执行后即销毁”。它的�
 
 2.  **布防阶段 (Arming)**:
     *   用户按下全局快捷键 `Alt+L` （可修改）或点击界面上的“启动监控”按钮。
-    *   应用状态变为“准备中”，并给予用户几秒钟的准备时间离开座位。
+    *   应用状态变为“准备中”，并给予用户2秒钟的准备时间准备。
 
 3.  **警戒阶段 (Active)**:
     *   准备时间结束后，应用进入“警戒中”状态，主窗口自动隐藏。
@@ -46,15 +46,14 @@ SnapLock 的设计哲学是“一次性任务，执行后即销毁”。它的�
 
 4.  **触发与执行阶段 (Trigger & Action)**:
     *   一旦检测到**任何**键盘或鼠标活动：
-        *   **拍照**: 立即通过选定的摄像头拍摄一张照片，并保存到指定路径。
+        *   **拍照**: 立即通过选定的摄像头拍摄一张照片并保存到指定路径。
         *   **锁屏**: 执行系统命令锁定计算机屏幕。
-        *   **退出**: 完成任务后，应用进程会自动终止，不留任何后台服务。
 
 ## 🚀 使用教程
 
 ### 1. 安装
 
-您可以从我们的 [GitHub Releases](https://github.com/OldSuns/snaplock/releases) 页面下载最新的安装程序（例如 `SnapLock_0.4.0_x64-setup.exe`）。
+您可以从我们的 [GitHub Releases](https://github.com/OldSuns/snaplock/releases) 页面下载最新的安装程序（例如 `SnapLock_1.0.1_x64-setup.exe`）。
 
 ### 2. 配置
 
@@ -62,15 +61,15 @@ SnapLock 的设计哲学是“一次性任务，执行后即销毁”。它的�
 2.  点击**启动监控**或使用自定义快捷键（默认为`Alt+L`）。
 3.  （可选）在 **“启动监控”** 旁边，点击 `设置` 按钮，打开自定义设置。
 
-<img width="496" height="495" alt="image" src="https://github.com/user-attachments/assets/2ff75ec8-1082-471d-8028-d1407bdef913" />
+<img width="497" height="1143" alt="image" src="https://github.com/user-attachments/assets/b6aa835e-1665-4a33-beb9-deb980f1d96a" />
 
 ### 3. 使用
 
 1.  当您准备临时离开电脑时，按下自定义快捷键。
-2.  应用状态会变为“准备中”，您有几秒钟的时间离开。
+2.  应用状态会变为“准备中”，您有2秒钟的缓冲事件以免误触。
 3.  当状态变为“警戒中”后，您可以放心离开。
 4.  如果有人在您离开时试图使用您的电脑，SnapLock 会立即拍照并锁屏。
-5.  您回来后，正常解锁电脑即可。捕获的照片可以在您之前设定的路径中找到。
+5.  您回来后，正常解锁电脑即可。捕获的照片可以在您设定的路径中找到。
 
 ## 🛠️ 技术栈
 

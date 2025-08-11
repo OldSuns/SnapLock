@@ -1,0 +1,309 @@
+/* 日志面板样式 */
+.log-panel {
+  margin-top: 1rem;
+  border: 2px solid var(--border-primary);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  flex-shrink: 1;
+  min-height: 0;
+  max-height: calc(100vh - 200px);
+  box-shadow: 0 2px 8px var(--shadow-light);
+  display: flex;
+  flex-direction: column;
+}
+
+.log-panel:hover {
+  border-color: var(--border-secondary);
+  box-shadow: 0 4px 12px var(--shadow-medium);
+}
+
+/* 确保日志面板在小屏幕下不会消失 */
+@media (max-height: 500px) {
+  .log-panel {
+    margin-top: 0.5rem;
+    max-height: calc(100vh - 150px);
+  }
+}
+
+@media (max-height: 400px) {
+  .log-panel {
+    margin-top: 0.25rem;
+    max-height: calc(100vh - 120px);
+  }
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.log-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.log-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.log-icon {
+  font-size: 1rem;
+  opacity: 0.8;
+}
+
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.log-clear-button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.log-clear-button:hover {
+  background: var(--bg-tertiary);
+  color: #e53e3e;
+}
+
+.log-toggle-button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.log-toggle-button:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.log-toggle-button.expanded {
+  transform: rotate(0deg);
+}
+
+.log-content {
+  height: 200px;
+  min-height: 20px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  resize: vertical;
+  border: 1px solid var(--border-primary);
+  border-radius: 0 0 8px 8px;
+  transition: all 0.3s ease;
+}
+
+/* 智能响应式设计 - 基于窗口高度 */
+@media (max-height: 700px) {
+  .log-content {
+    height: 150px;
+    min-height: 20px;
+    max-height: 35vh;
+  }
+}
+
+@media (max-height: 500px) {
+  .log-content {
+    height: 120px;
+    min-height: 20px;
+    max-height: 30vh;
+  }
+}
+
+@media (max-height: 400px) {
+  .log-content {
+    height: 100px;
+    min-height: 20px;
+    max-height: 25vh;
+  }
+}
+
+/* 窗口很小时的紧凑模式 */
+@media (max-height: 350px) {
+  .log-content {
+    height: 80px;
+    min-height: 20px;
+    max-height: 20vh;
+  }
+  
+  .log-entry {
+    padding: 0.1rem 0.3rem;
+    margin-bottom: 0.1rem;
+    font-size: 0.65rem;
+  }
+  
+  .log-timestamp,
+  .log-level {
+    font-size: 0.6rem;
+  }
+}
+
+.log-empty {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.9rem;
+  font-style: italic;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.log-empty::before {
+  content: "📋";
+  font-size: 2rem;
+  opacity: 0.5;
+}
+
+.log-entries {
+  padding: 0.5rem;
+}
+
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  margin-bottom: 0.2rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-family: 'Consolas', 'Monaco', 'SF Mono', 'Courier New', monospace;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+  line-height: 1.3;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.log-entry:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+:root.dark-mode .log-entry:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.log-timestamp {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  font-weight: 500;
+  flex-shrink: 0;
+  font-size: 0.65rem;
+}
+
+.log-level {
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 45px;
+  flex-shrink: 0;
+  font-size: 0.65rem;
+}
+
+.log-message {
+  flex: 1;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.3;
+  min-width: 0;
+  hyphens: auto;
+}
+
+@media (max-width: 400px) {
+  .log-entry {
+    flex-direction: column;
+    gap: 0.1rem;
+    font-size: 0.65rem;
+  }
+  
+  .log-timestamp,
+  .log-level {
+    font-size: 0.6rem;
+    min-width: auto;
+  }
+  
+  .log-message {
+    margin-top: 0.1rem;
+    margin-left: 0;
+  }
+}
+
+/* 日志级别样式 */
+.log-error {
+  border-left-color: #e53e3e;
+  background: rgba(229, 62, 62, 0.05);
+}
+
+.log-error .log-level {
+  color: #e53e3e;
+}
+
+.log-warn {
+  border-left-color: #ed8936;
+  background: rgba(237, 137, 54, 0.05);
+}
+
+.log-warn .log-level {
+  color: #ed8936;
+}
+
+.log-info {
+  border-left-color: #3182ce;
+  background: rgba(49, 130, 206, 0.05);
+}
+
+.log-info .log-level {
+  color: #3182ce;
+}
+
+.log-debug {
+  border-left-color: #805ad5;
+  background: rgba(128, 90, 213, 0.05);
+}
+
+.log-debug .log-level {
+  color: #805ad5;
+}
+
+.log-default {
+  border-left-color: var(--text-tertiary);
+  background: rgba(113, 128, 150, 0.05);
+}
+
+.log-default .log-level {
+  color: var(--text-tertiary);
+}

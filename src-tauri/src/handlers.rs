@@ -190,6 +190,11 @@ pub async fn set_shortcut_key(app_handle: tauri::AppHandle, shortcut: String) ->
         return Err(format!("快捷键注册失败: {}", e));
     }
     
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
     log::info!("快捷键已更新为: {}", shortcut);
     Ok(())
 }
@@ -246,6 +251,12 @@ pub fn get_show_debug_logs(app_handle: tauri::AppHandle) -> Result<bool, String>
 pub fn set_show_debug_logs(app_handle: tauri::AppHandle, show: bool) -> Result<(), String> {
     let state = app_handle.state::<AppState>();
     state.set_show_debug_logs(show);
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
     log::info!("调试日志显示设置已更新为: {}", show);
     Ok(())
 }
@@ -272,6 +283,62 @@ pub fn set_save_logs_to_file(app_handle: tauri::AppHandle, save: bool) -> Result
         }
     }
     
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
     log::info!("日志保存到文件设置已更新为: {}", save);
+    Ok(())
+}
+
+/// 记录保存路径更改的日志
+#[tauri::command]
+pub fn log_save_path_change(old_path: String, new_path: String) -> Result<(), String> {
+    log::info!("保存路径已更改: '{}' -> '{}'", old_path, new_path);
+    Ok(())
+}
+
+/// 获取锁定时退出设置
+#[tauri::command]
+pub fn get_exit_on_lock(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let state = app_handle.state::<AppState>();
+    Ok(state.exit_on_lock())
+}
+
+/// 设置锁定时退出选项
+#[tauri::command]
+pub fn set_exit_on_lock(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    state.set_exit_on_lock(enabled);
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("锁定时退出设置已更新为: {}", enabled);
+    Ok(())
+}
+
+/// 获取暗色模式设置
+#[tauri::command]
+pub fn get_dark_mode(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    Ok(state.dark_mode())
+}
+
+/// 设置暗色模式
+#[tauri::command]
+pub fn set_dark_mode(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    state.set_dark_mode(enabled);
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("暗色模式设置已更新为: {}", enabled);
     Ok(())
 }

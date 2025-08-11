@@ -236,23 +236,22 @@ fn handle_key_press(event: &Event, app_handle: &AppHandle) -> bool {
 async fn trigger_lockdown(app_handle: AppHandle) {
     log::info!("=== 开始执行锁定流程 ===");
     
-    // 通知前端状态变化
-    let state = app_handle.state::<AppState>();
-    if state.set_status(MonitoringState::Idle).is_ok() {
-        app_handle.emit("monitoring_status_changed", "锁定中").unwrap_or_else(|e| {
-            log::error!("无法发送锁定状态事件: {}", e);
-        });
-    }
+    // 首先将状态设置为锁定中，但不改变内部状态机状态
+    // 这样可以避免状态转换验证的问题
+    app_handle.emit("monitoring_status_changed", "锁定中").unwrap_or_else(|e| {
+        log::error!("无法发送锁定状态事件: {}", e);
+    });
     
     // --- 动态获取摄像头ID和保存路径 ---
-    let (camera_id, save_path) = {
+    let (camera_id, save_path, exit_on_lock_enabled) = {
         let state = app_handle.state::<AppState>();
         let camera_id = state.camera_id();
         let save_path = state.save_path();
-        (camera_id, save_path)
+        let exit_on_lock = state.exit_on_lock();
+        (camera_id, save_path, exit_on_lock)
     };
 
-    log::info!("监控触发，使用摄像头ID: {}", camera_id);
+    log::info!("监控触发，使用摄像头ID: {}, 锁定时退出: {}", camera_id, exit_on_lock_enabled);
 
     // --- 异步执行拍照 ---
     log::info!("开始拍照...");
@@ -262,13 +261,23 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         log::info!("拍照完成");
     }
 
-    // --- 锁屏并退出 ---
+    // --- 锁屏 ---
     log::info!("准备执行锁屏...");
     lock_screen();
     
     log::info!("等待锁屏命令完成...");
-    sleep(Duration::from_millis(1000)).await; // 增加等待时间确保锁屏命令完成
+    sleep(Duration::from_millis(1000)).await; // 等待锁屏命令完成
     
-    log::info!("准备退出程序...");
-    std::process::exit(0);
+    // 检查是否启用了锁定时退出功能
+    if exit_on_lock_enabled {
+        log::info!("锁定时退出已启用，准备退出程序...");
+        std::process::exit(0);
+    } else {
+        log::info!("锁定时退出已禁用，程序继续运行");
+        log::info!("状态将由会话监控器在系统解锁时自动重置");
+        // 注意：此时不立即重置状态，而是依赖会话监控器在系统解锁时重置状态
+        // 这样可以确保状态同步的准确性
+    }
+    
+    log::info!("=== 锁定流程执行完成 ===");
 }

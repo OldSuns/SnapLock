@@ -4,9 +4,10 @@ version = 4
 
 [[package]]
 name = "SnapLock"
-version = "0.4.1"
+version = "1.0.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "image",
@@ -22,6 +23,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tokio",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -1,0 +1,321 @@
+/* 按钮样式 */
+
+/* 通用图标按钮样式 - 减少重复代码 */
+.icon-button {
+  width: 40px;
+  height: 40px;
+  border: 2px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px var(--shadow-light);
+}
+
+.icon-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--shadow-medium);
+}
+
+.icon-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 主要操作按钮 - 针对小窗口优化 */
+.main-action-button {
+  width: 100%;
+  max-width: 100%;
+  padding: 0.9rem 1rem;
+  border: 2px solid var(--border-primary);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  box-shadow: 0 2px 8px var(--shadow-medium);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  text-align: center;
+  min-height: 45px;
+}
+
+.main-action-button:hover {
+  transform: translateY(-1px);
+  background: var(--bg-secondary);
+  border-color: var(--border-secondary);
+  box-shadow: 0 4px 12px var(--shadow-heavy);
+}
+
+.main-action-button:active {
+  transform: translateY(0);
+}
+
+.main-action-button.disabled {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  border-color: var(--border-primary);
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 0 1px 3px var(--shadow-light);
+}
+
+.main-action-button.disabled:hover {
+  transform: none;
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+  box-shadow: 0 1px 3px var(--shadow-light);
+}
+
+.button-icon {
+  font-size: 1.1rem;
+  color: var(--text-secondary);
+}
+
+.button-text {
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  color: var(--text-primary);
+}
+
+.main-action-button.disabled .button-icon,
+.main-action-button.disabled .button-text {
+  color: var(--text-tertiary);
+}
+
+/* 操作按钮组 */
+.action-buttons {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.main-action-button {
+  flex: 1;
+}
+
+.settings-button {
+  width: 45px;
+  height: 45px;
+  padding: 0;
+  border: 2px solid var(--border-primary);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px var(--shadow-medium);
+  flex-shrink: 0;
+}
+
+.settings-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--shadow-heavy);
+}
+
+.settings-button:active {
+  transform: translateY(0);
+}
+
+/* 特定按钮样式 */
+.path-select-button {
+  width: 40px;
+  height: 40px;
+  border: 2px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px var(--shadow-light);
+}
+
+.path-select-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--shadow-medium);
+}
+
+.capture-button,
+.cancel-capture-button {
+  width: 40px;
+  height: 40px;
+  border: 2px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px var(--shadow-light);
+}
+
+.capture-button:hover {
+  background: #667eea;
+  border-color: #667eea;
+  color: white;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.cancel-capture-button {
+  background: #fed7d7;
+  border-color: #feb2b2;
+  color: #c53030;
+}
+
+.cancel-capture-button:hover {
+  background: #fbb6b6;
+  border-color: #f56565;
+  color: #9b2c2c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 101, 101, 0.3);
+}
+
+:root.dark-mode .cancel-capture-button {
+  background: #4a2c2c;
+  border-color: #6b3333;
+  color: #ff6b6b;
+}
+
+:root.dark-mode .cancel-capture-button:hover {
+  background: #5a3333;
+  border-color: #7b4444;
+  color: #ff8a8a;
+}
+
+.close-button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.close-button:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.check-permission-button {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border-primary);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.check-permission-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-secondary);
+}
+
+.check-permission-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.preview-toggle-button {
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.preview-toggle-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-secondary);
+}
+
+.preview-toggle-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.preview-toggle-button.active {
+  background: #667eea;
+  border-color: #667eea;
+  color: white;
+}
+
+.refresh-preview-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 32px;
+  height: 32px;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #4a5568;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.refresh-preview-button:hover {
+  background: var(--bg-primary);
+  border-color: var(--border-primary);
+  transform: scale(1.05);
+}

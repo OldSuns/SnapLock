@@ -70,12 +70,13 @@ pub fn setup_system_tray(app: &AppHandle<tauri::Wry>) -> Result<tauri::tray::Tra
 
 pub fn register_global_shortcuts(app: &mut App<tauri::Wry>) -> Result<()> {
     let handle = app.handle().clone();
+    let handle_backup = app.handle().clone();
     let state = app.state::<AppState>();
     let shortcut_str = state.shortcut_key();
     
     let shortcut: Shortcut = shortcut_str.parse().map_err(|e| anyhow::anyhow!("Invalid shortcut format: {}", e))?;
     
-    app.global_shortcut()
+    match app.global_shortcut()
         .on_shortcut(shortcut, move |app, _shortcut, _event| {
             let state = app.state::<AppState>();
             if state.shortcuts_disabled() {
@@ -87,9 +88,39 @@ pub fn register_global_shortcuts(app: &mut App<tauri::Wry>) -> Result<()> {
             tauri::async_runtime::spawn(async move {
                 handlers::toggle_monitoring(&handle_clone).await;
             });
-        })?;
-    println!("已注册全局快捷键: {}", shortcut_str);
-    Ok(())
+        }) {
+        Ok(_) => {
+            println!("已注册全局快捷键: {}", shortcut_str);
+            Ok(())
+        },
+        Err(e) => {
+            println!("警告：快捷键注册失败: {}，将使用备用快捷键", e);
+            // 尝试注册备用快捷键
+            let backup_shortcut = "Ctrl+Alt+L";
+            let backup: Shortcut = backup_shortcut.parse().map_err(|e| anyhow::anyhow!("Invalid backup shortcut format: {}", e))?;
+            
+            app.global_shortcut()
+                .on_shortcut(backup, move |app, _shortcut, _event| {
+                    let state = app.state::<AppState>();
+                    if state.shortcuts_disabled() {
+                        println!("快捷键已禁用，忽略触发");
+                        return;
+                    }
+                    
+                    let handle_clone = handle_backup.clone();
+                    tauri::async_runtime::spawn(async move {
+                        handlers::toggle_monitoring(&handle_clone).await;
+                    });
+                })?;
+            
+            // 更新状态中的快捷键
+            let state = app.state::<AppState>();
+            state.set_shortcut_key(backup_shortcut.to_string());
+            
+            println!("已注册备用全局快捷键: {}", backup_shortcut);
+            Ok(())
+        }
+    }
 }
 
 /// Updates the global shortcut by unregistering the old one and registering the new one

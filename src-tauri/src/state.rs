@@ -52,6 +52,10 @@ pub struct AppState {
     pub(crate) show_debug_logs: Mutex<bool>,
     /// Flag to save logs to file
     pub(crate) save_logs_to_file: Mutex<bool>,
+    /// Flag to exit application when system is locked
+    pub(crate) exit_on_lock: Mutex<bool>,
+    /// Flag for dark mode theme
+    pub(crate) dark_mode: Mutex<bool>,
 }
 
 impl AppState {
@@ -64,6 +68,8 @@ impl AppState {
             shortcuts_disabled: Mutex::new(false),
             show_debug_logs: Mutex::new(false),
             save_logs_to_file: Mutex::new(false),
+            exit_on_lock: Mutex::new(false),
+            dark_mode: Mutex::new(false),
         }
     }
 
@@ -133,6 +139,22 @@ impl AppState {
         if let Some(logger) = crate::logger::get_logger() {
             logger.set_log_to_file(save);
         }
+    }
+
+    pub fn exit_on_lock(&self) -> bool {
+        *self.exit_on_lock.lock().unwrap()
+    }
+
+    pub fn set_exit_on_lock(&self, enabled: bool) {
+        *self.exit_on_lock.lock().unwrap() = enabled;
+    }
+
+    pub fn dark_mode(&self) -> bool {
+        *self.dark_mode.lock().unwrap()
+    }
+
+    pub fn set_dark_mode(&self, enabled: bool) {
+        *self.dark_mode.lock().unwrap() = enabled;
     }
 }
 

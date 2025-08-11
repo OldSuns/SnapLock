@@ -7,7 +7,7 @@ use nokhwa::{
     utils::{ApiBackend, CameraIndex, CameraInfo},
 };
 use std::path::PathBuf;
-use tauri::command;
+use tauri::{command, Manager};
 use serde::Serialize;
 
 /// Camera information for frontend
@@ -209,7 +209,119 @@ use crate::state::AppState;
 /// * `path` - The new save path.
 /// * `state` - The application state.
 #[command]
-pub fn set_save_path(path: String, state: tauri::State<AppState>) -> Result<(), String> {
+pub fn set_save_path(path: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
     state.set_save_path(Some(path));
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
     Ok(())
+}
+
+/// 检查相机权限
+#[command]
+pub async fn check_camera_permission(camera_id: u32) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        match validate_camera_id(camera_id) {
+            Ok(_) => {
+                // 尝试初始化相机以检查权限
+                let index = CameraIndex::Index(camera_id);
+                let requested = nokhwa::utils::RequestedFormat::new::<RgbFormat>(
+                    nokhwa::utils::RequestedFormatType::AbsoluteHighestResolution
+                );
+                
+                match Camera::new(index, requested) {
+                    Ok(mut camera) => {
+                        // 尝试打开流以验证权限
+                        match camera.open_stream() {
+                            Ok(_) => {
+                                // 立即关闭流
+                                let _ = camera.stop_stream();
+                                Ok(true)
+                            }
+                            Err(e) => {
+                                log::warn!("相机权限检查失败: {}", e);
+                                Ok(false)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("相机初始化失败: {}", e);
+                        Ok(false)
+                    }
+                }
+            }
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 获取相机预览帧（base64编码的JPEG）
+#[command]
+pub async fn get_camera_preview(camera_id: u32) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        use nokhwa::utils::{RequestedFormat, RequestedFormatType};
+        use base64::{Engine as _, engine::general_purpose};
+        use std::io::Cursor;
+        
+        // 验证相机ID
+        let _camera_info = validate_camera_id(camera_id)?;
+        
+        let index = CameraIndex::Index(camera_id);
+        let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+        
+        // 初始化相机
+        let camera = Camera::new(index, requested)
+            .map_err(|e| format!("Failed to initialize camera ID {}: {}", camera_id, e))?;
+        
+        let mut camera_guard = CameraGuard::new(camera);
+        
+        // 获取预览帧
+        let (width, height, raw_buffer) = {
+            let cam = camera_guard.get_mut()
+                .ok_or("Camera guard failed to provide camera reference")?;
+            
+            cam.open_stream()
+                .map_err(|e| format!("Failed to open stream for camera ID {}: {}", camera_id, e))?;
+            
+            // 等待几帧以获得稳定的图像
+            for _ in 0..3 {
+                let _ = cam.frame();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            
+            let frame = cam.frame()
+                .map_err(|e| format!("Failed to capture preview frame from camera ID {}: {}", camera_id, e))?;
+            
+            let decoded_buffer = frame.decode_image::<RgbFormat>()
+                .map_err(|e| format!("Failed to decode preview image from camera ID {}: {}", camera_id, e))?;
+            
+            (decoded_buffer.width(), decoded_buffer.height(), decoded_buffer.into_raw())
+        };
+        
+        let rgb_image: RgbImage = ImageBuffer::from_raw(width, height, raw_buffer)
+            .ok_or("Failed to create image buffer from raw preview data")?;
+        
+        // 调整图像大小以减少数据传输
+        let preview_image = image::imageops::resize(&rgb_image, 320, 240, image::imageops::FilterType::Lanczos3);
+        
+        // 转换为JPEG格式
+        let mut jpeg_buffer = Vec::new();
+        {
+            let mut cursor = Cursor::new(&mut jpeg_buffer);
+            preview_image.write_to(&mut cursor, image::ImageFormat::Jpeg)
+                .map_err(|e| format!("Failed to encode preview as JPEG: {}", e))?;
+        }
+        
+        // 转换为base64
+        let base64_image = general_purpose::STANDARD.encode(&jpeg_buffer);
+        Ok(format!("data:image/jpeg;base64,{}", base64_image))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }

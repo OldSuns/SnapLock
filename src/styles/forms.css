@@ -1,0 +1,175 @@
+/* 表单控件样式 */
+
+/* 选择器样式 - 紧凑版 */
+.select-wrapper {
+  position: relative;
+}
+
+.custom-select {
+  width: 100%;
+  max-width: 100%;
+  padding: 0.6rem 2rem 0.6rem 0.8rem;
+  border: 2px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 0.6rem center;
+  background-repeat: no-repeat;
+  background-size: 0.7rem;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+}
+
+.custom-select:hover {
+  border-color: #667eea;
+}
+
+/* 输入框样式 */
+.setting-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 2px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  transition: all 0.3s ease;
+  box-sizing: border-box;
+}
+
+.setting-input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.setting-input.path-display {
+  background: var(--bg-secondary);
+  flex: 1;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 路径输入组 - 紧凑版 */
+.path-input-group {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* 快捷键输入组样式 */
+.shortcut-input-group {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.shortcut-input {
+  flex: 1;
+}
+
+.shortcut-input.capturing {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  background: var(--bg-secondary);
+}
+
+:root.dark-mode .shortcut-input.capturing {
+  background: #2a2a3a;
+  border-color: #7c84ff;
+  box-shadow: 0 0 0 3px rgba(124, 132, 255, 0.2);
+}
+
+.shortcut-input.invalid {
+  border-color: #e53e3e;
+  box-shadow: 0 0 0 3px rgba(229, 62, 62, 0.1);
+}
+
+.shortcut-error {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: #fed7d7;
+  border: 1px solid #feb2b2;
+  border-radius: 6px;
+  color: #c53030;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+:root.dark-mode .shortcut-error {
+  background: #3a2626;
+  border-color: #4a3333;
+  color: #ff9999;
+}
+
+/* 复选框样式 */
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.checkbox-item:hover {
+  color: #4a5568;
+}
+
+.checkbox-input {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-primary);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.checkbox-input:checked {
+  background: #667eea;
+  border-color: #667eea;
+}
+
+.checkbox-input:checked::after {
+  content: '✓';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.checkbox-input:hover {
+  border-color: #667eea;
+}
+
+.checkbox-label {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  user-select: none;
+}

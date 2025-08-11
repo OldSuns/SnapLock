@@ -1,7 +1,7 @@
 [package]
 name = "SnapLock"
-version = "0.4.1"
-description = "临时离开电脑时有活动则锁屏"
+version = "1.0.1"
+description = "锁屏"
 authors = ["OldSun"]
 edition = "2024"
 
@@ -33,3 +33,11 @@ rdev = "0.5.3"
 tokio = { version = "1", features = ["full"] }
 tauri-plugin-global-shortcut = "2.3.0"
 anyhow = "1.0"
+base64 = "0.22.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_UI_WindowsAndMessaging",
+] }
