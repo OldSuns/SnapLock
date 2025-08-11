@@ -131,7 +131,7 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
     }
 
     // --- 事件过滤 ---
-    if handle_key_press(&event) {
+    if handle_key_press(&event, app_handle) {
         println!("忽略事件：快捷键相关按键 ({:?})", event.event_type);
         return;
     }
@@ -169,13 +169,63 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
 
 /// Handles key press events to filter out shortcut-related keys.
 /// Returns `true` if the event should be ignored.
-fn handle_key_press(event: &Event) -> bool {
+fn handle_key_press(event: &Event, app_handle: &AppHandle) -> bool {
     match &event.event_type {
-        // 过滤Alt+L组合键相关的按键，防止快捷键触发熄屏
         EventType::KeyPress(key) | EventType::KeyRelease(key) => {
-            let should_ignore = matches!(key, Key::KeyL | Key::Alt | Key::AltGr);
+            // 动态获取当前快捷键设置
+            let state = app_handle.state::<AppState>();
+            let current_shortcut = state.shortcut_key();
+            
+            // 解析快捷键组合
+            let parts: Vec<&str> = current_shortcut.split('+').collect();
+            if parts.is_empty() {
+                return false;
+            }
+            
+            // 获取主键（最后一个部分）
+            let main_key = parts.last().unwrap();
+            
+            // 检查是否是当前快捷键相关的按键
+            let should_ignore = match key {
+                Key::Alt | Key::AltGr => parts.contains(&"Alt"),
+                Key::ControlLeft | Key::ControlRight => parts.contains(&"Ctrl"),
+                Key::ShiftLeft | Key::ShiftRight => parts.contains(&"Shift"),
+                Key::MetaLeft | Key::MetaRight => parts.contains(&"Meta"),
+                _ => {
+                    // 检查主键
+                    let key_name = format!("{:?}", key);
+                    key_name.contains(main_key) ||
+                    (*main_key == "L" && matches!(key, Key::KeyL)) ||
+                    (*main_key == "D" && matches!(key, Key::KeyD)) ||
+                    (*main_key == "S" && matches!(key, Key::KeyS)) ||
+                    (*main_key == "A" && matches!(key, Key::KeyA)) ||
+                    (*main_key == "Q" && matches!(key, Key::KeyQ)) ||
+                    (*main_key == "W" && matches!(key, Key::KeyW)) ||
+                    (*main_key == "E" && matches!(key, Key::KeyE)) ||
+                    (*main_key == "R" && matches!(key, Key::KeyR)) ||
+                    (*main_key == "T" && matches!(key, Key::KeyT)) ||
+                    (*main_key == "Y" && matches!(key, Key::KeyY)) ||
+                    (*main_key == "U" && matches!(key, Key::KeyU)) ||
+                    (*main_key == "I" && matches!(key, Key::KeyI)) ||
+                    (*main_key == "O" && matches!(key, Key::KeyO)) ||
+                    (*main_key == "P" && matches!(key, Key::KeyP)) ||
+                    (*main_key == "F" && matches!(key, Key::KeyF)) ||
+                    (*main_key == "G" && matches!(key, Key::KeyG)) ||
+                    (*main_key == "H" && matches!(key, Key::KeyH)) ||
+                    (*main_key == "J" && matches!(key, Key::KeyJ)) ||
+                    (*main_key == "K" && matches!(key, Key::KeyK)) ||
+                    (*main_key == "Z" && matches!(key, Key::KeyZ)) ||
+                    (*main_key == "X" && matches!(key, Key::KeyX)) ||
+                    (*main_key == "C" && matches!(key, Key::KeyC)) ||
+                    (*main_key == "V" && matches!(key, Key::KeyV)) ||
+                    (*main_key == "B" && matches!(key, Key::KeyB)) ||
+                    (*main_key == "N" && matches!(key, Key::KeyN)) ||
+                    (*main_key == "M" && matches!(key, Key::KeyM))
+                }
+            };
+            
             if should_ignore {
-                println!("过滤快捷键相关按键: {:?}", key);
+                println!("过滤当前快捷键相关按键: {:?} (快捷键: {})", key, current_shortcut);
             }
             should_ignore
         },

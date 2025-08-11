@@ -56,7 +56,11 @@ fn main() {
             camera::get_camera_list,
             handlers::set_camera_id,
             handlers::set_save_path,
-            handlers::set_exit_on_lock
+            handlers::set_exit_on_lock,
+            handlers::get_shortcut_key,
+            handlers::set_shortcut_key,
+            handlers::disable_shortcuts,
+            handlers::enable_shortcuts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

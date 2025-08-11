@@ -45,6 +45,10 @@ pub struct AppState {
     pub(crate) save_path: Mutex<Option<String>>,
     /// Determines whether the app should exit after locking the screen.
     pub(crate) exit_on_lock: Mutex<bool>,
+    /// The custom shortcut key combination, protected by a Mutex.
+    pub(crate) shortcut_key: Mutex<String>,
+    /// Flag to temporarily disable global shortcuts (e.g., during shortcut configuration)
+    pub(crate) shortcuts_disabled: Mutex<bool>,
 }
 
 impl AppState {
@@ -54,6 +58,8 @@ impl AppState {
             camera_id: Mutex::new(camera_id),
             save_path: Mutex::new(None),
             exit_on_lock: Mutex::new(true), // Default to true to exit on lock
+            shortcut_key: Mutex::new("Alt+L".to_string()),
+            shortcuts_disabled: Mutex::new(false),
         }
     }
 
@@ -87,6 +93,22 @@ impl AppState {
 
     pub fn set_save_path(&self, path: Option<String>) {
         *self.save_path.lock().unwrap() = path;
+    }
+
+    pub fn shortcut_key(&self) -> String {
+        self.shortcut_key.lock().unwrap().clone()
+    }
+
+    pub fn set_shortcut_key(&self, key: String) {
+        *self.shortcut_key.lock().unwrap() = key;
+    }
+
+    pub fn shortcuts_disabled(&self) -> bool {
+        *self.shortcuts_disabled.lock().unwrap()
+    }
+
+    pub fn set_shortcuts_disabled(&self, disabled: bool) {
+        *self.shortcuts_disabled.lock().unwrap() = disabled;
     }
 }
 

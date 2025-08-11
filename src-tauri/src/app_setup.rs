@@ -6,8 +6,8 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     App, AppHandle, Manager,
 };
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
-use crate::handlers;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use crate::{handlers, state::AppState};
 
 pub fn setup_system_tray(app: &AppHandle<tauri::Wry>) -> Result<tauri::tray::TrayIcon<tauri::Wry>> {
     let toggle_item = MenuItem::with_id(app, "toggle", "显示/隐藏窗口", true, None::<&str>)?;
@@ -70,13 +70,59 @@ pub fn setup_system_tray(app: &AppHandle<tauri::Wry>) -> Result<tauri::tray::Tra
 
 pub fn register_global_shortcuts(app: &mut App<tauri::Wry>) -> Result<()> {
     let handle = app.handle().clone();
+    let state = app.state::<AppState>();
+    let shortcut_str = state.shortcut_key();
+    
+    let shortcut: Shortcut = shortcut_str.parse().map_err(|e| anyhow::anyhow!("Invalid shortcut format: {}", e))?;
+    
     app.global_shortcut()
-        .on_shortcut("Alt+L", move |_app, _shortcut, _event| {
+        .on_shortcut(shortcut, move |app, _shortcut, _event| {
+            let state = app.state::<AppState>();
+            if state.shortcuts_disabled() {
+                println!("快捷键已禁用，忽略触发");
+                return;
+            }
+            
             let handle_clone = handle.clone();
             tauri::async_runtime::spawn(async move {
                 handlers::toggle_monitoring(&handle_clone).await;
             });
         })?;
+    println!("已注册全局快捷键: {}", shortcut_str);
+    Ok(())
+}
+
+/// Updates the global shortcut by unregistering the old one and registering the new one
+pub async fn update_global_shortcut(
+    app_handle: &AppHandle<tauri::Wry>,
+    old_shortcut: &str,
+    new_shortcut: &str
+) -> Result<()> {
+    println!("更新全局快捷键: {} -> {}", old_shortcut, new_shortcut);
+    
+    // Unregister the old shortcut
+    if let Err(e) = app_handle.global_shortcut().unregister(old_shortcut) {
+        eprintln!("取消注册旧快捷键失败: {}", e);
+    }
+    
+    // Register the new shortcut
+    let shortcut: Shortcut = new_shortcut.parse().map_err(|e| anyhow::anyhow!("Invalid shortcut format: {}", e))?;
+    let handle_clone = app_handle.clone();
+    app_handle.global_shortcut()
+        .on_shortcut(shortcut, move |app, _shortcut, _event| {
+            let state = app.state::<AppState>();
+            if state.shortcuts_disabled() {
+                println!("快捷键已禁用，忽略触发");
+                return;
+            }
+            
+            let handle_clone = handle_clone.clone();
+            tauri::async_runtime::spawn(async move {
+                handlers::toggle_monitoring(&handle_clone).await;
+            });
+        })?;
+        
+    println!("新快捷键注册成功: {}", new_shortcut);
     Ok(())
 }
 
