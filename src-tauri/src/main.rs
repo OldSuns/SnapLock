@@ -7,6 +7,7 @@ mod state;
 mod app_setup;
 mod constants;
 mod handlers;
+mod logger;
 
 use crate::state::{AppState, MonitoringFlags};
 use std::sync::{Arc, Mutex};
@@ -28,6 +29,11 @@ fn main() {
         .manage(last_toggle_time)
         .setup(|app| {
             let handle = app.handle().clone();
+            
+            // 初始化日志系统
+            if let Err(e) = logger::init_logger(handle.clone()) {
+                eprintln!("Failed to initialize logger: {}", e);
+            }
             
             // 请求通知权限
             #[cfg(target_os = "windows")]
@@ -59,7 +65,15 @@ fn main() {
             handlers::get_shortcut_key,
             handlers::set_shortcut_key,
             handlers::disable_shortcuts,
-            handlers::enable_shortcuts
+            handlers::enable_shortcuts,
+            handlers::get_show_debug_logs,
+            handlers::set_show_debug_logs,
+            handlers::get_save_logs_to_file,
+            handlers::set_save_logs_to_file,
+            logger::get_debug_logs,
+            logger::clear_debug_logs,
+            logger::set_log_to_file,
+            logger::set_log_file_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

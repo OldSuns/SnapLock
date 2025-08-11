@@ -20,6 +20,21 @@ const tempShortcut = ref<string>("Alt+L");
 const tempSavePath = ref<string>("");
 const isCapturingShortcut = ref<boolean>(false);
 
+// 日志相关状态
+const showDebugLogs = ref<boolean>(false);
+const saveLogsToFile = ref<boolean>(false);
+const tempShowDebugLogs = ref<boolean>(false);
+const tempSaveLogsToFile = ref<boolean>(false);
+const logEntries = ref<any[]>([]);
+const logPanelExpanded = ref<boolean>(false);
+
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+  target: string;
+}
+
 const statusClass = computed(() => {
   switch (monitoringStatus.value) {
     case "警戒中":
@@ -66,6 +81,49 @@ onMounted(async () => {
   listen<string>("monitoring_status_changed", (event) => {
     monitoringStatus.value = event.payload;
   });
+
+  // 监听日志事件
+  listen<LogEntry>("log_entry", (event) => {
+    if (showDebugLogs.value) {
+      logEntries.value.push(event.payload);
+      // 限制日志条数，避免内存溢出
+      if (logEntries.value.length > 500) {
+        logEntries.value.shift();
+      }
+      // 自动滚动到最新日志
+      nextTick(() => {
+        const logContainer = document.querySelector('.log-content');
+        if (logContainer) {
+          logContainer.scrollTop = logContainer.scrollHeight;
+        }
+      });
+    }
+  });
+
+  // 获取日志设置
+  try {
+    showDebugLogs.value = await invoke<boolean>("get_show_debug_logs");
+    tempShowDebugLogs.value = showDebugLogs.value;
+    
+    saveLogsToFile.value = await invoke<boolean>("get_save_logs_to_file");
+    tempSaveLogsToFile.value = saveLogsToFile.value;
+    
+    // 如果启用了日志保存，设置日志文件路径
+    if (saveLogsToFile.value) {
+      await invoke("set_log_file_path", { path: savePath.value });
+    }
+  } catch (error) {
+    console.error("Failed to get log settings:", error);
+  }
+
+  // 如果显示日志已启用，获取现有日志
+  if (showDebugLogs.value) {
+    try {
+      logEntries.value = await invoke<LogEntry[]>("get_debug_logs");
+    } catch (error) {
+      console.error("Failed to get debug logs:", error);
+    }
+  }
 });
 
 async function toggleMonitoring() {
@@ -82,6 +140,8 @@ async function toggleMonitoring() {
 function openSettings() {
   tempShortcut.value = currentShortcut.value;
   tempSavePath.value = savePath.value;
+  tempShowDebugLogs.value = showDebugLogs.value;
+  tempSaveLogsToFile.value = saveLogsToFile.value;
   showSettings.value = true;
 }
 
@@ -98,7 +158,7 @@ async function selectSavePathInSettings() {
     directory: true,
     multiple: false,
     defaultPath: tempSavePath.value,
-    title: "选择照片保存位置"
+    title: "选择保存位置"
   });
 
   if (typeof selected === 'string' && selected !== null) {
@@ -128,6 +188,12 @@ async function savePathSetting() {
     if (tempSavePath.value !== savePath.value) {
       await invoke("set_save_path", { path: tempSavePath.value });
       savePath.value = tempSavePath.value;
+      
+      // 更新日志文件路径
+      if (saveLogsToFile.value) {
+        await invoke("set_log_file_path", { path: tempSavePath.value });
+      }
+      
       console.log("保存路径已更新为:", tempSavePath.value);
     }
   } catch (error) {
@@ -233,6 +299,55 @@ function validateShortcut(shortcut: string): boolean {
   
   return true;
 }
+
+// 日志相关函数
+function toggleLogPanel() {
+  logPanelExpanded.value = !logPanelExpanded.value;
+}
+
+function clearLogs() {
+  logEntries.value = [];
+  invoke("clear_debug_logs").catch(console.error);
+}
+
+function getLogLevelClass(level: string): string {
+  switch (level.toLowerCase()) {
+    case 'error': return 'log-error';
+    case 'warn': return 'log-warn';
+    case 'info': return 'log-info';
+    case 'debug': return 'log-debug';
+    default: return 'log-default';
+  }
+}
+
+async function saveLogSettings() {
+  try {
+    if (tempShowDebugLogs.value !== showDebugLogs.value) {
+      await invoke("set_show_debug_logs", { show: tempShowDebugLogs.value });
+      showDebugLogs.value = tempShowDebugLogs.value;
+      
+      // 如果开启了日志显示，获取现有日志
+      if (showDebugLogs.value) {
+        logEntries.value = await invoke<LogEntry[]>("get_debug_logs");
+      } else {
+        logEntries.value = [];
+      }
+    }
+
+    if (tempSaveLogsToFile.value !== saveLogsToFile.value) {
+      await invoke("set_save_logs_to_file", { save: tempSaveLogsToFile.value });
+      saveLogsToFile.value = tempSaveLogsToFile.value;
+    }
+
+    console.log("日志设置已保存");
+  } catch (error) {
+    console.error("Failed to save log settings:", error);
+    alert(`日志设置保存失败: ${error}`);
+    // 恢复到之前的值
+    tempShowDebugLogs.value = showDebugLogs.value;
+    tempSaveLogsToFile.value = saveLogsToFile.value;
+  }
+}
 </script>
 
 <template>
@@ -282,6 +397,42 @@ function validateShortcut(shortcut: string): boolean {
             <button @click="openSettings" class="settings-button" title="设置">
               ⚙️
             </button>
+          </div>
+        </div>
+
+        <!-- 日志面板 -->
+        <div v-if="showDebugLogs" class="log-panel">
+          <div class="log-header" @click="toggleLogPanel">
+            <div class="log-title">
+              <span class="log-icon">📋</span>
+              调试日志
+            </div>
+            <div class="log-controls">
+              <button @click.stop="clearLogs" class="log-clear-button" title="清空日志">
+                🗑️
+              </button>
+              <button class="log-toggle-button" :class="{ 'expanded': logPanelExpanded }">
+                {{ logPanelExpanded ? '▼' : '▶' }}
+              </button>
+            </div>
+          </div>
+          
+          <div v-if="logPanelExpanded" class="log-content">
+            <div v-if="logEntries.length === 0" class="log-empty">
+              暂无日志记录
+            </div>
+            <div v-else class="log-entries">
+              <div
+                v-for="(entry, index) in logEntries"
+                :key="index"
+                class="log-entry"
+                :class="getLogLevelClass(entry.level)"
+              >
+                <span class="log-timestamp">{{ entry.timestamp }}</span>
+                <span class="log-level">[{{ entry.level }}]</span>
+                <span class="log-message">{{ entry.message }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -336,7 +487,7 @@ function validateShortcut(shortcut: string): boolean {
           <div class="setting-item">
             <label class="setting-label">
               <span class="setting-icon">📁</span>
-              照片保存路径
+              照片&日志保存路径
             </label>
             <div class="path-input-group">
               <input
@@ -349,6 +500,33 @@ function validateShortcut(shortcut: string): boolean {
               <button @click="selectSavePathInSettings" class="path-select-button">
                 📂
               </button>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <label class="setting-label">
+              <span class="setting-icon">🐛</span>
+              调试选项
+            </label>
+            <div class="checkbox-group">
+              <label class="checkbox-item">
+                <input
+                  type="checkbox"
+                  v-model="tempShowDebugLogs"
+                  @change="saveLogSettings"
+                  class="checkbox-input"
+                />
+                <span class="checkbox-label">显示调试日志</span>
+              </label>
+              <label class="checkbox-item">
+                <input
+                  type="checkbox"
+                  v-model="tempSaveLogsToFile"
+                  @change="saveLogSettings"
+                  class="checkbox-input"
+                />
+                <span class="checkbox-label">保存日志到文件</span>
+              </label>
             </div>
           </div>
         </div>
@@ -475,6 +653,8 @@ function validateShortcut(shortcut: string): boolean {
   flex-direction: column;
   overflow: hidden;
   box-sizing: border-box;
+  min-height: 0;
+  flex: 1;
 }
 
 .control-card:hover {
@@ -946,6 +1126,298 @@ function validateShortcut(shortcut: string): boolean {
   color: #c53030;
   font-size: 0.8rem;
   line-height: 1.4;
+}
+
+/* 日志面板样式 */
+.log-panel {
+  margin-top: 1rem;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  background: white;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+  min-height: 0;
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.log-header:hover {
+  background: #edf2f7;
+}
+
+.log-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: #2d3748;
+  font-size: 0.9rem;
+}
+
+.log-icon {
+  font-size: 1rem;
+  opacity: 0.8;
+}
+
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.log-clear-button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #718096;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.log-clear-button:hover {
+  background: #e2e8f0;
+  color: #e53e3e;
+}
+
+.log-toggle-button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #718096;
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.log-toggle-button:hover {
+  background: #e2e8f0;
+  color: #4a5568;
+}
+
+.log-toggle-button.expanded {
+  transform: rotate(0deg);
+}
+
+.log-content {
+  height: 150px;
+  min-height: 100px;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: #fafafa;
+  resize: vertical;
+}
+
+@media (max-height: 600px) {
+  .log-content {
+    height: 100px;
+    max-height: 25vh;
+  }
+}
+
+@media (max-height: 400px) {
+  .log-content {
+    height: 80px;
+    max-height: 20vh;
+  }
+}
+
+.log-empty {
+  padding: 2rem;
+  text-align: center;
+  color: #a0aec0;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+.log-entries {
+  padding: 0.5rem;
+}
+
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  padding: 0.2rem 0.4rem;
+  margin-bottom: 0.15rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+  line-height: 1.2;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.log-entry:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.log-timestamp {
+  color: #718096;
+  white-space: nowrap;
+  font-weight: 500;
+  flex-shrink: 0;
+  font-size: 0.65rem;
+}
+
+.log-level {
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 45px;
+  flex-shrink: 0;
+  font-size: 0.65rem;
+}
+
+.log-message {
+  flex: 1;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.3;
+  min-width: 0;
+  hyphens: auto;
+}
+
+@media (max-width: 400px) {
+  .log-entry {
+    flex-direction: column;
+    gap: 0.1rem;
+    font-size: 0.65rem;
+  }
+  
+  .log-timestamp,
+  .log-level {
+    font-size: 0.6rem;
+    min-width: auto;
+  }
+  
+  .log-message {
+    margin-top: 0.1rem;
+    margin-left: 0;
+  }
+}
+
+.log-error {
+  border-left-color: #e53e3e;
+  background: rgba(229, 62, 62, 0.05);
+}
+
+.log-error .log-level {
+  color: #e53e3e;
+}
+
+.log-warn {
+  border-left-color: #ed8936;
+  background: rgba(237, 137, 54, 0.05);
+}
+
+.log-warn .log-level {
+  color: #ed8936;
+}
+
+.log-info {
+  border-left-color: #3182ce;
+  background: rgba(49, 130, 206, 0.05);
+}
+
+.log-info .log-level {
+  color: #3182ce;
+}
+
+.log-debug {
+  border-left-color: #805ad5;
+  background: rgba(128, 90, 213, 0.05);
+}
+
+.log-debug .log-level {
+  color: #805ad5;
+}
+
+.log-default {
+  border-left-color: #718096;
+  background: rgba(113, 128, 150, 0.05);
+}
+
+.log-default .log-level {
+  color: #718096;
+}
+
+/* 复选框样式 */
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.checkbox-item:hover {
+  color: #4a5568;
+}
+
+.checkbox-input {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #e2e8f0;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.checkbox-input:checked {
+  background: #667eea;
+  border-color: #667eea;
+}
+
+.checkbox-input:checked::after {
+  content: '✓';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.checkbox-input:hover {
+  border-color: #667eea;
+}
+
+.checkbox-label {
+  font-size: 0.9rem;
+  color: #2d3748;
+  user-select: none;
 }
 </style>
 <style>

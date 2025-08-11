@@ -48,6 +48,10 @@ pub struct AppState {
     pub(crate) shortcut_key: Mutex<String>,
     /// Flag to temporarily disable global shortcuts (e.g., during shortcut configuration)
     pub(crate) shortcuts_disabled: Mutex<bool>,
+    /// Flag to show debug logs in the UI
+    pub(crate) show_debug_logs: Mutex<bool>,
+    /// Flag to save logs to file
+    pub(crate) save_logs_to_file: Mutex<bool>,
 }
 
 impl AppState {
@@ -58,6 +62,8 @@ impl AppState {
             save_path: Mutex::new(None),
             shortcut_key: Mutex::new("Alt+L".to_string()),
             shortcuts_disabled: Mutex::new(false),
+            show_debug_logs: Mutex::new(false),
+            save_logs_to_file: Mutex::new(false),
         }
     }
 
@@ -107,6 +113,26 @@ impl AppState {
 
     pub fn set_shortcuts_disabled(&self, disabled: bool) {
         *self.shortcuts_disabled.lock().unwrap() = disabled;
+    }
+
+    pub fn show_debug_logs(&self) -> bool {
+        *self.show_debug_logs.lock().unwrap()
+    }
+
+    pub fn set_show_debug_logs(&self, show: bool) {
+        *self.show_debug_logs.lock().unwrap() = show;
+    }
+
+    pub fn save_logs_to_file(&self) -> bool {
+        *self.save_logs_to_file.lock().unwrap()
+    }
+
+    pub fn set_save_logs_to_file(&self, save: bool) {
+        *self.save_logs_to_file.lock().unwrap() = save;
+        // 同时更新日志器设置
+        if let Some(logger) = crate::logger::get_logger() {
+            logger.set_log_to_file(save);
+        }
     }
 }
 
@@ -178,30 +204,30 @@ impl MonitoringFlags {
 
     /// Stop the monitoring thread and clean up
     pub fn stop_monitoring_thread(&self) {
-        println!("停止监控线程...");
+        log::info!("停止监控线程...");
         if let Ok(mut handle_guard) = self.monitoring_handle.lock() {
             if let Some(handle) = handle_guard.take() {
                 if !handle.is_finished() {
-                    println!("中止监控线程");
+                    log::info!("中止监控线程");
                     handle.abort();
                 } else {
-                    println!("监控线程已经结束");
+                    log::info!("监控线程已经结束");
                 }
             } else {
-                println!("没有找到监控线程句柄");
+                log::warn!("没有找到监控线程句柄");
             }
         }
         self.set_monitoring_active(false);
-        println!("监控状态已重置为非激活");
+        log::info!("监控状态已重置为非激活");
     }
 
     /// Atomically start monitoring with proper state management
     pub fn start_monitoring_atomic(&self, handle: tokio::task::JoinHandle<()>) -> bool {
-        println!("尝试原子性启动监控...");
+        log::info!("尝试启动监控...");
         
         // First check if already monitoring
         if self.monitoring_active() {
-            println!("监控已经在运行中，中止新的监控线程");
+            log::warn!("监控已经在运行中，中止新的监控线程");
             handle.abort();
             return false;
         }
@@ -210,10 +236,10 @@ impl MonitoringFlags {
         if let Ok(mut handle_guard) = self.monitoring_handle.lock() {
             *handle_guard = Some(handle);
             self.set_monitoring_active(true);
-            println!("监控线程已启动并激活");
+            log::info!("监控线程已启动并激活");
             true
         } else {
-            println!("无法获取监控句柄锁，启动失败");
+            log::error!("无法获取监控句柄锁，启动失败");
             handle.abort();
             false
         }
@@ -227,11 +253,11 @@ impl MonitoringFlags {
         let is_healthy = monitoring_active == thread_alive;
         
         if !is_healthy {
-            println!("监控健康检查失败: 监控激活={}, 线程存活={}", monitoring_active, thread_alive);
+            log::warn!("监控健康检查失败: 监控激活={}, 线程存活={}", monitoring_active, thread_alive);
             
             // 自动修复不一致的状态
             if monitoring_active && !thread_alive {
-                println!("检测到监控激活但线程已死，重置监控状态");
+                log::warn!("检测到监控激活但线程已死，重置监控状态");
                 self.set_monitoring_active(false);
             }
         }
