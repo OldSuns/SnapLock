@@ -16,7 +16,7 @@
         "width": 400,
         "height": 400,
         "minWidth": 300,
-        "minHeight": 400,
+        "minHeight": 300,
         "resizable": true,
         "skipTaskbar": false,
         "center": true

@@ -161,3 +161,75 @@ pub async fn start_monitoring_command(app_handle: AppHandle, camera_id: u32) {
     state.set_camera_id(camera_id);
     toggle_monitoring(&app_handle).await;
 }
+
+/// Gets the current shortcut key
+#[tauri::command]
+pub fn get_shortcut_key(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let state = app_handle.state::<AppState>();
+    Ok(state.shortcut_key())
+}
+
+/// Sets a new shortcut key
+#[tauri::command]
+pub async fn set_shortcut_key(app_handle: tauri::AppHandle, shortcut: String) -> Result<(), String> {
+    // Validate the shortcut format
+    if !is_valid_shortcut(&shortcut) {
+        return Err("无效的快捷键格式".to_string());
+    }
+
+    let state = app_handle.state::<AppState>();
+    let old_shortcut = state.shortcut_key();
+    
+    // Update the shortcut in state
+    state.set_shortcut_key(shortcut.clone());
+    
+    // Re-register the global shortcut
+    if let Err(e) = crate::app_setup::update_global_shortcut(&app_handle, &old_shortcut, &shortcut).await {
+        // If re-registration fails, revert the state
+        state.set_shortcut_key(old_shortcut);
+        return Err(format!("快捷键注册失败: {}", e));
+    }
+    
+    println!("快捷键已更新为: {}", shortcut);
+    Ok(())
+}
+
+/// Validates if a shortcut string is in valid format
+fn is_valid_shortcut(shortcut: &str) -> bool {
+    // Basic validation - check if it contains valid modifier keys and a key
+    let parts: Vec<&str> = shortcut.split('+').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    
+    let modifiers = &parts[..parts.len()-1];
+    let key = parts.last().unwrap();
+    
+    // Check if modifiers are valid
+    for modifier in modifiers {
+        if !matches!(*modifier, "Ctrl" | "Alt" | "Shift" | "Meta" | "Cmd") {
+            return false;
+        }
+    }
+    
+    // Check if key is not empty and not a modifier
+    !key.is_empty() && !matches!(*key, "Ctrl" | "Alt" | "Shift" | "Meta" | "Cmd")
+}
+
+/// Disables global shortcuts temporarily
+#[tauri::command]
+pub fn disable_shortcuts(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    state.set_shortcuts_disabled(true);
+    println!("全局快捷键已禁用");
+    Ok(())
+}
+
+/// Enables global shortcuts
+#[tauri::command]
+pub fn enable_shortcuts(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    state.set_shortcuts_disabled(false);
+    println!("全局快捷键已启用");
+    Ok(())
+}
