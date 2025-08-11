@@ -13,9 +13,13 @@
     "windows": [
       {
         "title": "SnapLock",
-        "width": 500,
-        "height": 500,
-        "skipTaskbar": false
+        "width": 400,
+        "height": 400,
+        "minWidth": 300,
+        "minHeight": 400,
+        "resizable": true,
+        "skipTaskbar": false,
+        "center": true
       }
     ],
     "security": {
