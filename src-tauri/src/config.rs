@@ -3,9 +3,19 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
-/// 为启用锁屏功能提供默认值
-fn default_enable_screen_lock() -> bool {
-    true
+/// 触发后动作选项
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PostTriggerAction {
+    /// 拍摄并锁屏
+    CaptureAndLock,
+    /// 只拍摄
+    CaptureOnly,
+}
+
+impl Default for PostTriggerAction {
+    fn default() -> Self {
+        PostTriggerAction::CaptureAndLock
+    }
 }
 
 /// 为启用系统通知提供默认值
@@ -21,8 +31,8 @@ pub struct AppConfig {
     pub save_logs_to_file: bool,
     pub dark_mode: bool,
     pub exit_on_lock: bool,
-    #[serde(default = "default_enable_screen_lock")]
-    pub enable_screen_lock: bool,
+    #[serde(default)]
+    pub post_trigger_action: PostTriggerAction,
     #[serde(default = "default_enable_notifications")]
     pub enable_notifications: bool,
 }
@@ -36,7 +46,7 @@ impl Default for AppConfig {
             save_logs_to_file: false,
             dark_mode: false,
             exit_on_lock: false,
-            enable_screen_lock: true, // 默认启用锁屏功能
+            post_trigger_action: PostTriggerAction::CaptureAndLock,
             enable_notifications: true, // 默认启用系统通知
         }
     }
@@ -105,7 +115,10 @@ impl AppConfig {
         self.save_logs_to_file = state.save_logs_to_file();
         self.exit_on_lock = state.exit_on_lock();
         self.dark_mode = state.dark_mode();
-        self.enable_screen_lock = state.enable_screen_lock();
+        
+        // 直接使用post_trigger_action状态
+        self.post_trigger_action = state.post_trigger_action();
+        
         self.enable_notifications = state.enable_notifications();
     }
 
@@ -121,7 +134,14 @@ impl AppConfig {
         state.set_save_logs_to_file(self.save_logs_to_file);
         state.set_exit_on_lock(self.exit_on_lock);
         state.set_dark_mode(self.dark_mode);
-        state.set_enable_screen_lock(self.enable_screen_lock);
+        
+        // 根据post_trigger_action设置enable_screen_lock状态
+        // 这是为了向后兼容旧代码
+        match self.post_trigger_action {
+            PostTriggerAction::CaptureAndLock => state.set_enable_screen_lock(true),
+            PostTriggerAction::CaptureOnly => state.set_enable_screen_lock(false),
+        }
+        
         state.set_enable_notifications(self.enable_notifications);
     }
 

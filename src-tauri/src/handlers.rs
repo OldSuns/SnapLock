@@ -353,27 +353,6 @@ pub fn set_dark_mode(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), 
     Ok(())
 }
 
-/// 获取锁屏功能启用状态
-#[tauri::command]
-pub fn get_enable_screen_lock(app_handle: tauri::AppHandle) -> Result<bool, String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    Ok(state.enable_screen_lock())
-}
-
-/// 设置锁屏功能启用状态
-#[tauri::command]
-pub fn set_enable_screen_lock(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_enable_screen_lock(enabled);
-    
-    // 自动保存配置
-    if let Err(e) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", e);
-    }
-    
-    log::info!("锁屏功能启用设置已更新为: {}", enabled);
-    Ok(())
-}
 
 /// 获取系统通知启用状态
 #[tauri::command]
@@ -394,5 +373,27 @@ pub fn set_enable_notifications(app_handle: tauri::AppHandle, enabled: bool) -> 
     }
     
     log::info!("系统通知启用设置已更新为: {}", enabled);
+    Ok(())
+}
+
+/// 获取触发后动作设置
+#[tauri::command]
+pub fn get_post_trigger_action(app_handle: tauri::AppHandle) -> Result<crate::config::PostTriggerAction, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    Ok(state.post_trigger_action())
+}
+
+/// 设置触发后动作选项
+#[tauri::command]
+pub fn set_post_trigger_action(app_handle: tauri::AppHandle, action: crate::config::PostTriggerAction) -> Result<(), String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    state.set_post_trigger_action(action.clone());
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("触发后动作设置已更新为: {:?}", action);
     Ok(())
 }

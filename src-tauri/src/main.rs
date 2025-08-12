@@ -72,8 +72,11 @@ fn main() {
             // Setup tray icon
             let _tray = app_setup::setup_system_tray(&handle)?;
 
-            // Register global shortcuts
-            app_setup::register_global_shortcuts(app)?;
+            // Register global shortcuts - 不要让快捷键注册失败导致程序崩溃
+            if let Err(e) = app_setup::register_global_shortcuts(app) {
+                log::error!("快捷键注册失败: {}", e);
+                // 程序继续运行，用户可以通过系统托盘或界面操作
+            }
 
             Ok(())
         })
@@ -102,8 +105,6 @@ fn main() {
             handlers::set_exit_on_lock,
             handlers::get_dark_mode,
             handlers::set_dark_mode,
-            handlers::get_enable_screen_lock,
-            handlers::set_enable_screen_lock,
             handlers::get_enable_notifications,
             handlers::set_enable_notifications,
             handlers::log_save_path_change,
@@ -113,7 +114,9 @@ fn main() {
             logger::get_debug_logs,
             logger::clear_debug_logs,
             logger::set_log_to_file,
-            logger::set_log_file_path
+            logger::set_log_file_path,
+            handlers::get_post_trigger_action,
+            handlers::set_post_trigger_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -45,9 +45,10 @@ const tempIsDarkMode = ref<boolean>(false);
 const exitOnLock = ref<boolean>(false);
 const tempExitOnLock = ref<boolean>(false);
 
-// 锁屏开关状态
-const enableScreenLock = ref<boolean>(true);
-const tempEnableScreenLock = ref<boolean>(true);
+
+// 触发后动作状态
+const postTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly'>('CaptureAndLock');
+const tempPostTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly'>('CaptureAndLock');
 
 // 通知开关状态
 const enableNotifications = ref<boolean>(true);
@@ -144,12 +145,12 @@ async function loadAppConfig(): Promise<boolean> {
     const config = await invoke<AppConfig>("load_config");
     isDarkMode.value = config.dark_mode;
     exitOnLock.value = config.exit_on_lock;
-    enableScreenLock.value = config.enable_screen_lock;
     enableNotifications.value = config.enable_notifications ?? true; // 默认启用
+    postTriggerAction.value = config.post_trigger_action ?? 'CaptureAndLock'; // 默认拍摄并锁屏
     tempIsDarkMode.value = isDarkMode.value;
     tempExitOnLock.value = exitOnLock.value;
-    tempEnableScreenLock.value = enableScreenLock.value;
     tempEnableNotifications.value = enableNotifications.value;
+    tempPostTriggerAction.value = postTriggerAction.value;
     
     // 设置保存路径
     const targetPath = config.save_path || await desktopDir();
@@ -194,8 +195,8 @@ function openSettings() {
   tempSaveLogsToFile.value = saveLogsToFile.value;
   tempIsDarkMode.value = isDarkMode.value;
   tempExitOnLock.value = exitOnLock.value;
-  tempEnableScreenLock.value = enableScreenLock.value;
   tempEnableNotifications.value = enableNotifications.value;
+  tempPostTriggerAction.value = postTriggerAction.value;
   
   showSettings.value = true;
   
@@ -448,20 +449,6 @@ async function saveExitOnLockSettings() {
   }
 }
 
-// 保存锁屏开关设置
-async function saveEnableScreenLockSettings() {
-  try {
-    if (tempEnableScreenLock.value !== enableScreenLock.value) {
-      await invoke("set_enable_screen_lock", { enabled: tempEnableScreenLock.value });
-      enableScreenLock.value = tempEnableScreenLock.value;
-      console.log("锁屏开关设置已更新为:", enableScreenLock.value);
-    }
-  } catch (error) {
-    console.error("Failed to save screen lock settings:", error);
-    // 恢复到之前的值
-    tempEnableScreenLock.value = enableScreenLock.value;
-  }
-}
 
 // 保存通知开关设置
 async function saveEnableNotificationsSettings() {
@@ -475,6 +462,21 @@ async function saveEnableNotificationsSettings() {
     console.error("Failed to save notifications settings:", error);
     // 恢复到之前的值
     tempEnableNotifications.value = enableNotifications.value;
+  }
+}
+
+// 保存触发后动作设置
+async function savePostTriggerActionSettings() {
+  try {
+    if (tempPostTriggerAction.value !== postTriggerAction.value) {
+      await invoke("set_post_trigger_action", { action: tempPostTriggerAction.value });
+      postTriggerAction.value = tempPostTriggerAction.value;
+      console.log("触发后动作设置已更新为:", postTriggerAction.value);
+    }
+  } catch (error) {
+    console.error("Failed to save post trigger action settings:", error);
+    // 恢复到之前的值
+    tempPostTriggerAction.value = postTriggerAction.value;
   }
 }
 
@@ -657,6 +659,14 @@ onMounted(async () => {
       tempEnableNotifications.value = enableNotifications.value;
     } catch (error) {
       console.error("Failed to get notifications setting:", error);
+    }
+    
+    // 获取触发后动作设置
+    try {
+      postTriggerAction.value = await invoke<"CaptureAndLock" | "CaptureOnly">("get_post_trigger_action");
+      tempPostTriggerAction.value = postTriggerAction.value;
+    } catch (error) {
+      console.error("Failed to get post trigger action setting:", error);
     }
   }
 
@@ -915,17 +925,28 @@ onUnmounted(() => {
               安全选项
             </label>
             <div class="security-controls">
-              <label class="checkbox-item">
-                <input
-                  type="checkbox"
-                  v-model="tempEnableScreenLock"
-                  @change="saveEnableScreenLockSettings"
-                  class="checkbox-input"
-                />
-                <span class="checkbox-label">启用锁屏功能</span>
-              </label>
-              <div class="setting-description">
-                启用后，监控过程中检测到行为时会自动锁定屏幕
+              <div class="setting-label">触发后动作</div>
+              <div class="radio-group">
+                <label class="radio-item">
+                  <input
+                    type="radio"
+                    v-model="tempPostTriggerAction"
+                    value="CaptureAndLock"
+                    @change="savePostTriggerActionSettings"
+                    class="radio-input"
+                  />
+                  <span class="radio-label">拍摄并锁屏</span>
+                </label>
+                <label class="radio-item">
+                  <input
+                    type="radio"
+                    v-model="tempPostTriggerAction"
+                    value="CaptureOnly"
+                    @change="savePostTriggerActionSettings"
+                    class="radio-input"
+                  />
+                  <span class="radio-label">只拍摄</span>
+                </label>
               </div>
               <label class="checkbox-item">
                 <input
@@ -1197,5 +1218,68 @@ onUnmounted(() => {
   margin-top: 0.25rem !important;
   line-height: 1.4 !important;
   opacity: 0.8 !important;
+}
+
+/* 单选按钮样式 */
+.radio-input {
+  width: 18px !important;
+  height: 18px !important;
+  border: 2px solid var(--border-primary) !important;
+  border-radius: 50% !important;
+  background: var(--bg-primary) !important;
+  cursor: pointer !important;
+  transition: all 0.3s ease !important;
+  position: relative !important;
+  flex-shrink: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.radio-input:checked {
+  background: #667eea !important;
+  border-color: #667eea !important;
+}
+
+.radio-input:checked::after {
+  content: '' !important;
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 50% !important;
+  background: white !important;
+}
+
+.radio-input:hover {
+  border-color: #667eea !important;
+}
+
+.radio-label {
+  font-size: 0.9rem !important;
+  color: var(--text-primary) !important;
+  user-select: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.radio-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.radio-group {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.75rem !important;
 }
 </style>

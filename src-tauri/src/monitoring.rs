@@ -243,18 +243,24 @@ async fn trigger_lockdown(app_handle: AppHandle) {
     });
     
     // --- 动态获取摄像头ID、保存路径和设置 ---
-    let (camera_id, save_path, exit_on_lock_enabled, screen_lock_enabled, notifications_enabled) = {
+    let (camera_id, save_path, exit_on_lock_enabled, post_trigger_action, notifications_enabled) = {
         let state = app_handle.state::<AppState>();
         let camera_id = state.camera_id();
         let save_path = state.save_path();
         let exit_on_lock = state.exit_on_lock();
-        let screen_lock = state.enable_screen_lock();
+        let post_trigger_action = state.post_trigger_action();
         let notifications = state.enable_notifications();
-        (camera_id, save_path, exit_on_lock, screen_lock, notifications)
+        (camera_id, save_path, exit_on_lock, post_trigger_action, notifications)
+    };
+    
+    // 根据post_trigger_action确定是否需要锁屏
+    let screen_lock_enabled = match post_trigger_action {
+        crate::config::PostTriggerAction::CaptureAndLock => true,
+        crate::config::PostTriggerAction::CaptureOnly => false,
     };
 
-    log::info!("监控触发，使用摄像头ID: {}, 锁屏功能: {}, 通知功能: {}, 锁定时退出: {}",
-        camera_id, screen_lock_enabled, notifications_enabled, exit_on_lock_enabled);
+    log::info!("监控触发，使用摄像头ID: {}, 触发后动作: {:?}, 通知功能: {}, 锁定时退出: {}",
+        camera_id, post_trigger_action, notifications_enabled, exit_on_lock_enabled);
 
     // --- 异步执行拍照 ---
     log::info!("开始拍照...");

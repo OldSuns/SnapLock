@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use crate::config::PostTriggerAction;
 
 /// Represents the monitoring status of the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,8 @@ pub struct AppState {
     pub(crate) enable_screen_lock: Mutex<bool>,
     /// Flag to enable/disable system notifications
     pub(crate) enable_notifications: Mutex<bool>,
+    /// Post trigger action setting
+    pub(crate) post_trigger_action: Mutex<PostTriggerAction>,
 }
 
 impl AppState {
@@ -76,6 +79,7 @@ impl AppState {
             dark_mode: Mutex::new(false),
             enable_screen_lock: Mutex::new(true), // 默认启用锁屏功能
             enable_notifications: Mutex::new(true), // 默认启用系统通知
+            post_trigger_action: Mutex::new(PostTriggerAction::CaptureAndLock), // 默认拍摄并锁屏
         }
     }
 
@@ -171,10 +175,6 @@ impl AppState {
         *self.dark_mode.lock().unwrap() = enabled;
     }
 
-    pub fn enable_screen_lock(&self) -> bool {
-        *self.enable_screen_lock.lock().unwrap()
-    }
-
     pub fn set_enable_screen_lock(&self, enabled: bool) {
         *self.enable_screen_lock.lock().unwrap() = enabled;
     }
@@ -185,6 +185,14 @@ impl AppState {
 
     pub fn set_enable_notifications(&self, enabled: bool) {
         *self.enable_notifications.lock().unwrap() = enabled;
+    }
+    
+    pub fn post_trigger_action(&self) -> PostTriggerAction {
+        self.post_trigger_action.lock().unwrap().clone()
+    }
+    
+    pub fn set_post_trigger_action(&self, action: PostTriggerAction) {
+        *self.post_trigger_action.lock().unwrap() = action;
     }
 }
 

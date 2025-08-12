@@ -14,6 +14,7 @@ export interface AppConfig {
   exit_on_lock: boolean;
   enable_screen_lock: boolean;
   enable_notifications: boolean;
+  post_trigger_action: 'CaptureAndLock' | 'CaptureOnly';
 }
 
 export interface LogEntry {
