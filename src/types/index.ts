@@ -12,6 +12,8 @@ export interface AppConfig {
   save_logs_to_file: boolean;
   dark_mode: boolean;
   exit_on_lock: boolean;
+  enable_screen_lock: boolean;
+  enable_notifications: boolean;
 }
 
 export interface LogEntry {

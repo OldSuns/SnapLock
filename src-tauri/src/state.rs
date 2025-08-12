@@ -56,6 +56,10 @@ pub struct AppState {
     pub(crate) exit_on_lock: Mutex<bool>,
     /// Flag for dark mode theme
     pub(crate) dark_mode: Mutex<bool>,
+    /// Flag to enable/disable screen locking functionality
+    pub(crate) enable_screen_lock: Mutex<bool>,
+    /// Flag to enable/disable system notifications
+    pub(crate) enable_notifications: Mutex<bool>,
 }
 
 impl AppState {
@@ -70,6 +74,8 @@ impl AppState {
             save_logs_to_file: Mutex::new(false),
             exit_on_lock: Mutex::new(false),
             dark_mode: Mutex::new(false),
+            enable_screen_lock: Mutex::new(true), // 默认启用锁屏功能
+            enable_notifications: Mutex::new(true), // 默认启用系统通知
         }
     }
 
@@ -99,6 +105,14 @@ impl AppState {
 
     pub fn save_path(&self) -> Option<String> {
         self.save_path.lock().unwrap().clone()
+    }
+
+    /// 获取有效的保存路径，如果配置中没有设置则返回默认桌面路径
+    pub fn get_effective_save_path(&self) -> String {
+        match self.save_path.lock().unwrap().clone() {
+            Some(path) => path,
+            None => crate::config::get_default_save_path(),
+        }
     }
 
     pub fn set_save_path(&self, path: Option<String>) {
@@ -155,6 +169,22 @@ impl AppState {
 
     pub fn set_dark_mode(&self, enabled: bool) {
         *self.dark_mode.lock().unwrap() = enabled;
+    }
+
+    pub fn enable_screen_lock(&self) -> bool {
+        *self.enable_screen_lock.lock().unwrap()
+    }
+
+    pub fn set_enable_screen_lock(&self, enabled: bool) {
+        *self.enable_screen_lock.lock().unwrap() = enabled;
+    }
+
+    pub fn enable_notifications(&self) -> bool {
+        *self.enable_notifications.lock().unwrap()
+    }
+
+    pub fn set_enable_notifications(&self, enabled: bool) {
+        *self.enable_notifications.lock().unwrap() = enabled;
     }
 }
 

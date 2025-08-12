@@ -45,6 +45,14 @@ const tempIsDarkMode = ref<boolean>(false);
 const exitOnLock = ref<boolean>(false);
 const tempExitOnLock = ref<boolean>(false);
 
+// 锁屏开关状态
+const enableScreenLock = ref<boolean>(true);
+const tempEnableScreenLock = ref<boolean>(true);
+
+// 通知开关状态
+const enableNotifications = ref<boolean>(true);
+const tempEnableNotifications = ref<boolean>(true);
+
 // 日志相关状态
 const showDebugLogs = ref<boolean>(false);
 const saveLogsToFile = ref<boolean>(false);
@@ -136,8 +144,12 @@ async function loadAppConfig(): Promise<boolean> {
     const config = await invoke<AppConfig>("load_config");
     isDarkMode.value = config.dark_mode;
     exitOnLock.value = config.exit_on_lock;
+    enableScreenLock.value = config.enable_screen_lock;
+    enableNotifications.value = config.enable_notifications ?? true; // 默认启用
     tempIsDarkMode.value = isDarkMode.value;
     tempExitOnLock.value = exitOnLock.value;
+    tempEnableScreenLock.value = enableScreenLock.value;
+    tempEnableNotifications.value = enableNotifications.value;
     
     // 设置保存路径
     const targetPath = config.save_path || await desktopDir();
@@ -182,6 +194,8 @@ function openSettings() {
   tempSaveLogsToFile.value = saveLogsToFile.value;
   tempIsDarkMode.value = isDarkMode.value;
   tempExitOnLock.value = exitOnLock.value;
+  tempEnableScreenLock.value = enableScreenLock.value;
+  tempEnableNotifications.value = enableNotifications.value;
   
   showSettings.value = true;
   
@@ -434,6 +448,36 @@ async function saveExitOnLockSettings() {
   }
 }
 
+// 保存锁屏开关设置
+async function saveEnableScreenLockSettings() {
+  try {
+    if (tempEnableScreenLock.value !== enableScreenLock.value) {
+      await invoke("set_enable_screen_lock", { enabled: tempEnableScreenLock.value });
+      enableScreenLock.value = tempEnableScreenLock.value;
+      console.log("锁屏开关设置已更新为:", enableScreenLock.value);
+    }
+  } catch (error) {
+    console.error("Failed to save screen lock settings:", error);
+    // 恢复到之前的值
+    tempEnableScreenLock.value = enableScreenLock.value;
+  }
+}
+
+// 保存通知开关设置
+async function saveEnableNotificationsSettings() {
+  try {
+    if (tempEnableNotifications.value !== enableNotifications.value) {
+      await invoke("set_enable_notifications", { enabled: tempEnableNotifications.value });
+      enableNotifications.value = tempEnableNotifications.value;
+      console.log("系统通知开关设置已更新为:", enableNotifications.value);
+    }
+  } catch (error) {
+    console.error("Failed to save notifications settings:", error);
+    // 恢复到之前的值
+    tempEnableNotifications.value = enableNotifications.value;
+  }
+}
+
 // ===== 自定义拖拽调整功能 =====
 let isDragging = false;
 let startY = 0;
@@ -605,6 +649,14 @@ onMounted(async () => {
       tempIsDarkMode.value = isDarkMode.value;
     } catch (error) {
       console.error("Failed to get dark mode setting:", error);
+    }
+    
+    // 获取通知开关设置
+    try {
+      enableNotifications.value = await invoke<boolean>("get_enable_notifications");
+      tempEnableNotifications.value = enableNotifications.value;
+    } catch (error) {
+      console.error("Failed to get notifications setting:", error);
     }
   }
 
@@ -866,12 +918,45 @@ onUnmounted(() => {
               <label class="checkbox-item">
                 <input
                   type="checkbox"
+                  v-model="tempEnableScreenLock"
+                  @change="saveEnableScreenLockSettings"
+                  class="checkbox-input"
+                />
+                <span class="checkbox-label">启用锁屏功能</span>
+              </label>
+              <div class="setting-description">
+                启用后，监控过程中检测到行为时会自动锁定屏幕
+              </div>
+              <label class="checkbox-item">
+                <input
+                  type="checkbox"
                   v-model="tempExitOnLock"
                   @change="saveExitOnLockSettings"
                   class="checkbox-input"
                 />
                 <span class="checkbox-label">电脑锁定时自动退出程序</span>
               </label>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <label class="setting-label">
+              <span class="setting-icon">📢</span>
+              通知选项
+            </label>
+            <div class="notification-controls">
+              <label class="checkbox-item">
+                <input
+                  type="checkbox"
+                  v-model="tempEnableNotifications"
+                  @change="saveEnableNotificationsSettings"
+                  class="checkbox-input"
+                />
+                <span class="checkbox-label">启用系统通知</span>
+              </label>
+              <div class="setting-description">
+                启用后，监控过程中检测到行为时会显示系统通知
+              </div>
             </div>
           </div>
         </div>
@@ -1097,9 +1182,20 @@ onUnmounted(() => {
 
 /* 确保容器样式正确 */
 .theme-controls,
-.security-controls {
+.security-controls,
+.screen-lock-controls,
+.notification-controls {
   display: flex !important;
   flex-direction: column !important;
   gap: 0.75rem !important;
+}
+
+/* 设置描述文本样式 */
+.setting-description {
+  font-size: 0.75rem !important;
+  color: var(--text-tertiary) !important;
+  margin-top: 0.25rem !important;
+  line-height: 1.4 !important;
+  opacity: 0.8 !important;
 }
 </style>

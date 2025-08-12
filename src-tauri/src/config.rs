@@ -3,6 +3,16 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// 为启用锁屏功能提供默认值
+fn default_enable_screen_lock() -> bool {
+    true
+}
+
+/// 为启用系统通知提供默认值
+fn default_enable_notifications() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub shortcut_key: String,
@@ -11,6 +21,10 @@ pub struct AppConfig {
     pub save_logs_to_file: bool,
     pub dark_mode: bool,
     pub exit_on_lock: bool,
+    #[serde(default = "default_enable_screen_lock")]
+    pub enable_screen_lock: bool,
+    #[serde(default = "default_enable_notifications")]
+    pub enable_notifications: bool,
 }
 
 impl Default for AppConfig {
@@ -22,6 +36,8 @@ impl Default for AppConfig {
             save_logs_to_file: false,
             dark_mode: false,
             exit_on_lock: false,
+            enable_screen_lock: true, // 默认启用锁屏功能
+            enable_notifications: true, // 默认启用系统通知
         }
     }
 }
@@ -89,20 +105,40 @@ impl AppConfig {
         self.save_logs_to_file = state.save_logs_to_file();
         self.exit_on_lock = state.exit_on_lock();
         self.dark_mode = state.dark_mode();
+        self.enable_screen_lock = state.enable_screen_lock();
+        self.enable_notifications = state.enable_notifications();
     }
 
     /// 将配置应用到应用状态
     pub fn apply_to_state(&self, state: &crate::state::AppState) {
         state.set_shortcut_key(self.shortcut_key.clone());
-        if let Some(ref path) = self.save_path {
-            state.set_save_path(Some(path.clone()));
-        }
+        
+        // 总是设置save_path状态，无论配置中是Some还是None
+        // 这确保配置文件中的设置（包括None）总是优先于默认值
+        state.set_save_path(self.save_path.clone());
+        
         state.set_show_debug_logs(self.show_debug_logs);
         state.set_save_logs_to_file(self.save_logs_to_file);
         state.set_exit_on_lock(self.exit_on_lock);
         state.set_dark_mode(self.dark_mode);
+        state.set_enable_screen_lock(self.enable_screen_lock);
+        state.set_enable_notifications(self.enable_notifications);
     }
 
+}
+
+/// 获取默认保存路径（桌面）
+pub fn get_default_save_path() -> String {
+    match dirs::desktop_dir() {
+        Some(desktop) => desktop.to_string_lossy().to_string(),
+        None => {
+            // 如果无法获取桌面路径，使用当前目录
+            match std::env::current_dir() {
+                Ok(current) => current.to_string_lossy().to_string(),
+                Err(_) => ".".to_string(), // 最后的后备选项
+            }
+        }
+    }
 }
 
 /// 自动保存配置的命令

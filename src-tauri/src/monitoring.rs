@@ -242,16 +242,19 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         log::error!("无法发送锁定状态事件: {}", e);
     });
     
-    // --- 动态获取摄像头ID和保存路径 ---
-    let (camera_id, save_path, exit_on_lock_enabled) = {
+    // --- 动态获取摄像头ID、保存路径和设置 ---
+    let (camera_id, save_path, exit_on_lock_enabled, screen_lock_enabled, notifications_enabled) = {
         let state = app_handle.state::<AppState>();
         let camera_id = state.camera_id();
         let save_path = state.save_path();
         let exit_on_lock = state.exit_on_lock();
-        (camera_id, save_path, exit_on_lock)
+        let screen_lock = state.enable_screen_lock();
+        let notifications = state.enable_notifications();
+        (camera_id, save_path, exit_on_lock, screen_lock, notifications)
     };
 
-    log::info!("监控触发，使用摄像头ID: {}, 锁定时退出: {}", camera_id, exit_on_lock_enabled);
+    log::info!("监控触发，使用摄像头ID: {}, 锁屏功能: {}, 通知功能: {}, 锁定时退出: {}",
+        camera_id, screen_lock_enabled, notifications_enabled, exit_on_lock_enabled);
 
     // --- 异步执行拍照 ---
     log::info!("开始拍照...");
@@ -261,12 +264,24 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         log::info!("拍照完成");
     }
 
-    // --- 锁屏 ---
-    log::info!("准备执行锁屏...");
-    lock_screen();
-    
-    log::info!("等待锁屏命令完成...");
-    sleep(Duration::from_millis(1000)).await; // 等待锁屏命令完成
+    // --- 条件通知 ---
+    if notifications_enabled {
+        log::info!("通知功能已启用，发送系统通知...");
+        send_security_notification(&app_handle);
+    } else {
+        log::info!("通知功能已禁用，跳过通知步骤");
+    }
+
+    // --- 条件锁屏 ---
+    if screen_lock_enabled {
+        log::info!("锁屏功能已启用，准备执行锁屏...");
+        lock_screen();
+        
+        log::info!("等待锁屏命令完成...");
+        sleep(Duration::from_millis(1000)).await; // 等待锁屏命令完成
+    } else {
+        log::info!("锁屏功能已禁用，跳过锁屏步骤");
+    }
     
     // 检查是否启用了锁定时退出功能
     if exit_on_lock_enabled {
@@ -274,10 +289,65 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         std::process::exit(0);
     } else {
         log::info!("锁定时退出已禁用，程序继续运行");
-        log::info!("状态将由会话监控器在系统解锁时自动重置");
-        // 注意：此时不立即重置状态，而是依赖会话监控器在系统解锁时重置状态
-        // 这样可以确保状态同步的准确性
+        
+        // 关键修复：当锁屏功能被禁用时，主动重置状态
+        if !screen_lock_enabled {
+            log::info!("锁屏功能已禁用，主动重置应用状态为空闲");
+            let state = app_handle.state::<AppState>();
+            
+            // 尝试正常状态转换，如果失败则强制重置
+            let reset_success = match state.set_status(MonitoringState::Idle) {
+                Ok(_) => {
+                    log::info!("成功重置状态为空闲");
+                    true
+                }
+                Err(e) => {
+                    log::warn!("正常状态转换失败: {}, 执行强制重置", e);
+                    // 强制重置状态（绕过状态转换验证）
+                    if let Ok(mut status_lock) = state.status.lock() {
+                        *status_lock = MonitoringState::Idle;
+                        log::info!("强制重置状态为空闲成功");
+                        true
+                    } else {
+                        log::error!("无法获取状态锁进行强制重置");
+                        false
+                    }
+                }
+            };
+            
+            if reset_success {
+                // 发送状态重置事件到前端
+                app_handle.emit("monitoring_status_changed", "空闲").unwrap_or_else(|e| {
+                    log::error!("无法发送状态重置事件: {}", e);
+                });
+                log::info!("已发送状态重置事件到前端");
+            }
+        } else {
+            log::info!("锁屏功能已启用，状态将由会话监控器在系统解锁时自动重置");
+        }
     }
     
     log::info!("=== 锁定流程执行完成 ===");
+}
+
+/// 发送安全通知
+fn send_security_notification(app_handle: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    
+    let notification_result = app_handle
+        .notification()
+        .builder()
+        .title("SnapLock 安全警报")
+        .body("检测到未授权访问")
+        .icon("📷")
+        .show();
+    
+    match notification_result {
+        Ok(_) => {
+            log::info!("安全通知发送成功");
+        }
+        Err(e) => {
+            log::error!("发送安全通知失败: {}", e);
+        }
+    }
 }

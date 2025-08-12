@@ -89,13 +89,19 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                                 // Success: emit status change and show notification
                                 app_handle_clone.emit("monitoring_status_changed", "警戒中").unwrap();
                                 
-                                log::info!("监控成功启动，发送通知...");
-                                if let Err(e) = app_handle_clone.notification()
-                                    .builder()
-                                    .title("SnapLock")
-                                    .body("已进入警戒状态，正在监控活动")
-                                    .show() {
-                                    log::error!("无法显示通知: {}", e);
+                                // 检查通知开关状态
+                                let notifications_enabled = state.enable_notifications();
+                                if notifications_enabled {
+                                    log::info!("监控成功启动，发送通知...");
+                                    if let Err(e) = app_handle_clone.notification()
+                                        .builder()
+                                        .title("SnapLock")
+                                        .body("已进入警戒状态，正在监控活动")
+                                        .show() {
+                                        log::error!("无法显示通知: {}", e);
+                                    }
+                                } else {
+                                    log::info!("监控成功启动，通知功能已禁用");
                                 }
                                 
                                 if let Some(window) = app_handle_clone.get_webview_window("main") {
@@ -129,15 +135,20 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
             if state.set_status(MonitoringState::Idle).is_ok() {
                 app_handle.emit("monitoring_status_changed", "空闲").unwrap();
                 if was_active {
-                    // 改进的系统通知调用，添加错误处理
-                    if let Err(e) = app_handle.notification()
-                        .builder()
-                        .title("SnapLock")
-                        .body("已退出警戒状态")
-                        .show() {
-                        log::error!("无法显示通知: {}", e);
+                    // 检查通知开关状态
+                    let notifications_enabled = state.enable_notifications();
+                    if notifications_enabled {
+                        // 改进的系统通知调用，添加错误处理
+                        if let Err(e) = app_handle.notification()
+                            .builder()
+                            .title("SnapLock")
+                            .body("已退出警戒状态")
+                            .show() {
+                            log::error!("无法显示通知: {}", e);
+                        }
+                    } else {
+                        log::info!("监控已停止，通知功能已禁用");
                     }
-                    
                 }
                 log::info!("监控已成功停止");
             }
@@ -276,10 +287,9 @@ pub fn set_save_logs_to_file(app_handle: tauri::AppHandle, save: bool) -> Result
     
     // 如果启用了保存到文件，设置日志文件路径
     if save {
-        if let Some(save_path) = state.save_path() {
-            if let Some(logger) = crate::logger::get_logger() {
-                logger.set_log_file_path(Some(save_path));
-            }
+        let save_path = state.get_effective_save_path();
+        if let Some(logger) = crate::logger::get_logger() {
+            logger.set_log_file_path(Some(save_path));
         }
     }
     
@@ -340,5 +350,49 @@ pub fn set_dark_mode(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), 
     }
     
     log::info!("暗色模式设置已更新为: {}", enabled);
+    Ok(())
+}
+
+/// 获取锁屏功能启用状态
+#[tauri::command]
+pub fn get_enable_screen_lock(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    Ok(state.enable_screen_lock())
+}
+
+/// 设置锁屏功能启用状态
+#[tauri::command]
+pub fn set_enable_screen_lock(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    state.set_enable_screen_lock(enabled);
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("锁屏功能启用设置已更新为: {}", enabled);
+    Ok(())
+}
+
+/// 获取系统通知启用状态
+#[tauri::command]
+pub fn get_enable_notifications(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    Ok(state.enable_notifications())
+}
+
+/// 设置系统通知启用状态
+#[tauri::command]
+pub fn set_enable_notifications(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    state.set_enable_notifications(enabled);
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("系统通知启用设置已更新为: {}", enabled);
     Ok(())
 }
