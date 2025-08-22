@@ -89,6 +89,18 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                                 // Success: emit status change and show notification
                                 app_handle_clone.emit("monitoring_status_changed", "警戒中").unwrap();
                                 
+                                // If screen recording is enabled, set initial activity time and start the idle check loop
+                                if state.post_trigger_action() == crate::config::PostTriggerAction::ScreenRecording {
+                                    let current_time = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
+                                    monitoring_flags_clone.set_last_activity_time(current_time);
+                                    
+                                    let idle_check_handle = monitoring::start_idle_check_loop(app_handle_clone.clone(), monitoring_flags_clone.clone());
+                                    *monitoring_flags_clone.idle_check_handle.lock().unwrap() = Some(idle_check_handle);
+                                }
+
                                 // 检查通知开关状态
                                 let notifications_enabled = state.enable_notifications();
                                 if notifications_enabled {

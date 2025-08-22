@@ -23,7 +23,7 @@ import {
 // ===== 状态定义 =====
 const cameraList = ref<CameraInfo[]>([]);
 const selectedCameraId = ref<number>(0);
-const monitoringStatus = ref<MonitoringStatus>("空闲");
+const monitoringStatus = ref<MonitoringStatus | '锁定中'>("空闲");
 const savePath = ref<string>("");
 const showSettings = ref<boolean>(false);
 const currentShortcut = ref<string>("Alt+L");
@@ -66,11 +66,10 @@ const logPanelExpanded = ref<boolean>(false);
 const statusClass = computed(() => {
   switch (monitoringStatus.value) {
     case "警戒中":
+    case "锁定中":
       return "status-active";
     case "准备中":
       return "status-pending";
-    case "锁定中":
-      return "status-triggered"; // Or use another class
     default:
       return "status-idle";
   }
@@ -598,7 +597,7 @@ onMounted(async () => {
   }
 
   // 监听状态变化
-  listen<MonitoringStatus>("monitoring_status_changed", (event) => {
+  listen<MonitoringStatus | '锁定中'>("monitoring_status_changed", (event) => {
     monitoringStatus.value = event.payload;
   });
 
@@ -693,7 +692,7 @@ onUnmounted(() => {
       </div>
       <div class="status-indicator" :class="statusClass">
         <div class="status-dot"></div>
-        <span class="status-text">{{ monitoringStatus }}</span>
+        <span class="status-text">{{ monitoringStatus === '锁定中' ? '警戒中' : monitoringStatus }}</span>
       </div>
     </div>
 
@@ -717,9 +716,9 @@ onUnmounted(() => {
           <div class="action-buttons">
             <button
               @click="toggleMonitoring"
-              :disabled="monitoringStatus !== '空闲'"
+              :disabled="monitoringStatus === '准备中'"
               class="main-action-button"
-              :class="{ 'disabled': monitoringStatus !== '空闲' }"
+              :class="{ 'disabled': monitoringStatus === '准备中' }"
             >
               <span class="button-icon">{{ getStatusIcon(monitoringStatus) }}</span>
               <span class="button-text">{{ getStatusText(monitoringStatus, currentShortcut) }}</span>

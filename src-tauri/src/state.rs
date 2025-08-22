@@ -207,8 +207,12 @@ pub struct MonitoringFlags {
     pub(crate) shortcut_in_progress: std::sync::atomic::AtomicBool,
     /// Timestamp of last shortcut activation (in milliseconds since epoch)
     pub(crate) last_shortcut_time: std::sync::atomic::AtomicU64,
+    /// Timestamp of last user activity (in milliseconds since epoch)
+    pub(crate) last_activity_time: std::sync::atomic::AtomicU64,
     /// Handle to the monitoring thread for lifecycle management
     pub(crate) monitoring_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Handle to the idle check thread for lifecycle management
+    pub(crate) idle_check_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl MonitoringFlags {
@@ -217,7 +221,9 @@ impl MonitoringFlags {
             monitoring_active: std::sync::atomic::AtomicBool::new(false),
             shortcut_in_progress: std::sync::atomic::AtomicBool::new(false),
             last_shortcut_time: std::sync::atomic::AtomicU64::new(0),
+            last_activity_time: std::sync::atomic::AtomicU64::new(0),
             monitoring_handle: std::sync::Mutex::new(None),
+            idle_check_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -243,6 +249,14 @@ impl MonitoringFlags {
 
     pub fn set_last_shortcut_time(&self, value: u64) {
         self.last_shortcut_time.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn last_activity_time(&self) -> u64 {
+        self.last_activity_time.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_last_activity_time(&self, value: u64) {
+        self.last_activity_time.store(value, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Store the monitoring thread handle (used internally by start_monitoring_atomic)
@@ -277,6 +291,15 @@ impl MonitoringFlags {
                 }
             } else {
                 log::warn!("没有找到监控线程句柄");
+            }
+        }
+        // Stop the idle check thread as well
+        if let Ok(mut handle_guard) = self.idle_check_handle.lock() {
+            if let Some(handle) = handle_guard.take() {
+                if !handle.is_finished() {
+                    log::info!("中止空闲检测线程");
+                    handle.abort();
+                }
             }
         }
         self.set_monitoring_active(false);

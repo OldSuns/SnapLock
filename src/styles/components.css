@@ -78,8 +78,8 @@
 }
 
 .status-active .status-dot {
-  background: #4caf50;
-  box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+  background: #5ce024; /* Red color for active/triggered status */
+  box-shadow: 0 0 6px rgba(91, 237, 34, 0.6);
 }
 
 .status-pending .status-dot {

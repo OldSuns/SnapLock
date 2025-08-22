@@ -7,7 +7,8 @@ export function getStatusIcon(status: string): string {
   const iconMap: Record<string, string> = {
     '空闲': '▶️',
     '准备中': '⏳',
-    '警戒中': '🛡️'
+    '警戒中': '🛡️',
+    '锁定中': '🛡️' // 锁定中也显示盾牌
   };
   return iconMap[status] || '❓';
 }
@@ -19,9 +20,10 @@ export function getStatusText(status: string, shortcut: string): string {
   const textMap: Record<string, string> = {
     '空闲': '启动监控',
     '准备中': '准备中...',
-    '警戒中': `警戒中 (${shortcut} 停止)`
+    '警戒中': `警戒中 (${shortcut} 停止)`,
+    '锁定中': `等待关闭 (${shortcut} 停止)`
   };
-  return textMap[status] || '未知状态';
+  return textMap[status] || `等待关闭 (${shortcut} 停止)`;
 }
 
 /**
