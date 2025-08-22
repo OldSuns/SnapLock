@@ -10,27 +10,29 @@ pub enum MonitoringState {
     Preparing,
     /// The application is actively monitoring for input.
     Active,
+    /// The application has detected an event and is processing the action.
+    Triggered,
 }
 
 impl MonitoringState {
     /// Transitions to a new state, enforcing valid state transitions.
-    ///
-    /// # Rules:
-    /// - `Idle` -> `Preparing`
-    /// - `Preparing` -> `Active` | `Idle`
-    /// - `Active` -> `Idle`
     pub fn transition_to(
         &self,
         next_state: MonitoringState,
     ) -> Result<MonitoringState, &'static str> {
         match (self, next_state) {
-            // Idle can only transition to Preparing
+            // Idle -> Preparing
             (MonitoringState::Idle, MonitoringState::Preparing) => Ok(next_state),
-            // Preparing can transition to Active (success) or Idle (cancelled)
+            // Preparing -> Active | Idle
             (MonitoringState::Preparing, MonitoringState::Active) => Ok(next_state),
             (MonitoringState::Preparing, MonitoringState::Idle) => Ok(next_state),
-            // Active can only transition back to Idle
+            // Active -> Triggered (the key change!) | Idle
+            (MonitoringState::Active, MonitoringState::Triggered) => Ok(next_state),
             (MonitoringState::Active, MonitoringState::Idle) => Ok(next_state),
+            // Triggered -> Idle
+            (MonitoringState::Triggered, MonitoringState::Idle) => Ok(next_state),
+            // Allow resetting from any state to Idle
+            (_, MonitoringState::Idle) => Ok(next_state),
             // All other transitions are invalid
             _ => Err("Invalid state transition"),
         }

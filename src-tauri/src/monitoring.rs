@@ -137,6 +137,13 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
 
     // --- 触发核心逻辑 ---
     log::info!("✓ 触发锁定！事件类型: {:?}", event.event_type);
+
+    // --- 原子状态转换，防止竞态条件 ---
+    let state = app_handle.state::<AppState>();
+    if state.set_status(MonitoringState::Triggered).is_err() {
+        log::warn!("状态转换到Triggered失败，可能已被其他线程处理。忽略此事件。");
+        return;
+    }
     
     // 立即停止监控以防止重复触发
     monitoring_flags.set_monitoring_active(false);
@@ -235,9 +242,16 @@ fn handle_key_press(event: &Event, app_handle: &AppHandle) -> bool {
 /// Asynchronously triggers photo capture, screen lock, and application exit.
 async fn trigger_lockdown(app_handle: AppHandle) {
     log::info!("=== 开始执行锁定流程 ===");
+
+    // --- 关键修复：在执行任何操作前，再次确认当前状态 ---
+    // 这可以防止在状态转换期间（例如，从Active到Idle）的竞态条件下重复触发
+    let state_check = app_handle.state::<AppState>();
+    if state_check.status() != crate::state::MonitoringState::Triggered {
+        log::warn!("trigger_lockdown被调用，但当前状态不是Triggered ({:?})。取消执行。", state_check.status());
+        return;
+    }
     
-    // 首先将状态设置为锁定中，但不改变内部状态机状态
-    // 这样可以避免状态转换验证的问题
+    // 发送状态变化事件到前端
     app_handle.emit("monitoring_status_changed", "锁定中").unwrap_or_else(|e| {
         log::error!("无法发送锁定状态事件: {}", e);
     });
@@ -257,17 +271,36 @@ async fn trigger_lockdown(app_handle: AppHandle) {
     let screen_lock_enabled = match post_trigger_action {
         crate::config::PostTriggerAction::CaptureAndLock => true,
         crate::config::PostTriggerAction::CaptureOnly => false,
+        crate::config::PostTriggerAction::ScreenRecording => false,
     };
 
     log::info!("监控触发，使用摄像头ID: {}, 触发后动作: {:?}, 通知功能: {}, 锁定时退出: {}",
         camera_id, post_trigger_action, notifications_enabled, exit_on_lock_enabled);
 
-    // --- 异步执行拍照 ---
-    log::info!("开始拍照...");
-    if let Err(e) = camera::take_photo(camera_id, save_path).await {
-        log::error!("拍照失败: {}", e);
+    // --- 根据触发动作执行不同操作 ---
+    if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
+        // --- 开始屏幕录制并拍照 ---
+        log::info!("开始屏幕录制...");
+        if let Err(e) = crate::recorder::start_screen_recording(&app_handle) {
+            log::error!("启动屏幕录制失败: {}", e);
+        } else {
+            log::info!("屏幕录制已启动");
+            // 录制开始后立即拍照
+            log::info!("开始拍照...");
+            if let Err(e) = camera::take_photo(camera_id, save_path).await {
+                log::error!("拍照失败: {}", e);
+            } else {
+                log::info!("拍照完成");
+            }
+        }
     } else {
-        log::info!("拍照完成");
+        // --- 仅拍照 ---
+        log::info!("开始拍照...");
+        if let Err(e) = camera::take_photo(camera_id, save_path).await {
+            log::error!("拍照失败: {}", e);
+        } else {
+            log::info!("拍照完成");
+        }
     }
 
     // --- 条件通知 ---
@@ -296,40 +329,28 @@ async fn trigger_lockdown(app_handle: AppHandle) {
     } else {
         log::info!("锁定时退出已禁用，程序继续运行");
         
-        // 关键修复：当锁屏功能被禁用时，主动重置状态
-        if !screen_lock_enabled {
-            log::info!("锁屏功能已禁用，主动重置应用状态为空闲");
+        // 关键修复：仅在“只拍摄”模式下主动重置状态
+        if post_trigger_action == crate::config::PostTriggerAction::CaptureOnly {
+            log::info!("“只拍摄”模式完成，主动重置应用状态为空闲");
             let state = app_handle.state::<AppState>();
             
-            // 尝试正常状态转换，如果失败则强制重置
-            let reset_success = match state.set_status(MonitoringState::Idle) {
-                Ok(_) => {
-                    log::info!("成功重置状态为空闲");
-                    true
-                }
-                Err(e) => {
-                    log::warn!("正常状态转换失败: {}, 执行强制重置", e);
-                    // 强制重置状态（绕过状态转换验证）
-                    if let Ok(mut status_lock) = state.status.lock() {
-                        *status_lock = MonitoringState::Idle;
-                        log::info!("强制重置状态为空闲成功");
-                        true
-                    } else {
-                        log::error!("无法获取状态锁进行强制重置");
-                        false
-                    }
-                }
+            let reset_success = if state.set_status(MonitoringState::Idle).is_ok() {
+                log::info!("成功重置状态为空闲");
+                true
+            } else {
+                log::warn!("重置状态到Idle失败，可能状态已被改变");
+                false
             };
             
             if reset_success {
-                // 发送状态重置事件到前端
                 app_handle.emit("monitoring_status_changed", "空闲").unwrap_or_else(|e| {
                     log::error!("无法发送状态重置事件: {}", e);
                 });
                 log::info!("已发送状态重置事件到前端");
             }
         } else {
-            log::info!("锁屏功能已启用，状态将由会话监控器在系统解锁时自动重置");
+            // 对于“拍摄并锁屏”和“屏幕录制”模式，状态将由用户操作（快捷键）或系统事件（解锁）来重置
+            log::info!("动作 {:?} 已启动，等待用户或系统事件来重置状态", post_trigger_action);
         }
     }
     

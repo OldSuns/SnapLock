@@ -9,6 +9,7 @@ mod constants;
 mod handlers;
 mod logger;
 mod config;
+mod recorder;
 
 #[cfg(target_os = "windows")]
 mod session_monitor;
@@ -81,9 +82,17 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                window.hide().unwrap();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    window.hide().unwrap();
+                }
+                tauri::WindowEvent::Destroyed => {
+                    // 应用退出时，确保停止所有后台进程
+                    log::info!("窗口已销毁，正在停止后台进程...");
+                    crate::recorder::stop_screen_recording();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

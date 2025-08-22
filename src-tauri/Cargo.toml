@@ -1,6 +1,6 @@
 [package]
 name = "SnapLock"
-version = "1.0.2"
+version = "1.1.0"
 description = "锁屏"
 authors = ["OldSun"]
 edition = "2024"
@@ -34,6 +34,7 @@ tokio = { version = "1", features = ["full"] }
 tauri-plugin-global-shortcut = "2.3.0"
 anyhow = "1.0"
 base64 = "0.22.1"
+lazy_static = "1.4.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

@@ -124,12 +124,14 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
                 });
             }
         }
-        MonitoringState::Preparing | MonitoringState::Active => {
-            let was_active = state.status() == MonitoringState::Active;
+        MonitoringState::Preparing | MonitoringState::Active | MonitoringState::Triggered => {
+            let was_active = state.status() == MonitoringState::Active || state.status() == MonitoringState::Triggered;
             
             // Stop monitoring thread and reset state
             if was_active {
                 monitoring_flags.stop_monitoring_thread();
+                // 停止任何可能在运行的屏幕录制
+                crate::recorder::stop_screen_recording();
             }
             
             if state.set_status(MonitoringState::Idle).is_ok() {

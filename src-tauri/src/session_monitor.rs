@@ -223,13 +223,20 @@ impl SessionMonitor {
         
         log::info!("当前应用状态: {:?}", current_status);
         
+        // 停止任何可能在运行的屏幕录制
+        crate::recorder::stop_screen_recording();
+
+        // 停止监控线程
+        let monitoring_flags = app_handle.state::<Arc<crate::state::MonitoringFlags>>().inner().clone();
+        monitoring_flags.stop_monitoring_thread();
+
         // 智能状态重置：根据当前状态决定如何重置
         let reset_success = match current_status {
             MonitoringState::Idle => {
                 log::info!("应用已处于空闲状态，无需重置");
                 true
             },
-            MonitoringState::Preparing | MonitoringState::Active => {
+            MonitoringState::Preparing | MonitoringState::Active | MonitoringState::Triggered => {
                 // 这些状态可以正常转换到 Idle
                 match state.set_status(MonitoringState::Idle) {
                     Ok(_) => {

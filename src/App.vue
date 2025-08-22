@@ -47,8 +47,8 @@ const tempExitOnLock = ref<boolean>(false);
 
 
 // 触发后动作状态
-const postTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly'>('CaptureAndLock');
-const tempPostTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly'>('CaptureAndLock');
+const postTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly' | 'ScreenRecording'>('CaptureAndLock');
+const tempPostTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly' | 'ScreenRecording'>('CaptureAndLock');
 
 // 通知开关状态
 const enableNotifications = ref<boolean>(true);
@@ -69,6 +69,8 @@ const statusClass = computed(() => {
       return "status-active";
     case "准备中":
       return "status-pending";
+    case "锁定中":
+      return "status-triggered"; // Or use another class
     default:
       return "status-idle";
   }
@@ -663,7 +665,7 @@ onMounted(async () => {
     
     // 获取触发后动作设置
     try {
-      postTriggerAction.value = await invoke<"CaptureAndLock" | "CaptureOnly">("get_post_trigger_action");
+      postTriggerAction.value = await invoke<"CaptureAndLock" | "CaptureOnly" | "ScreenRecording">("get_post_trigger_action");
       tempPostTriggerAction.value = postTriggerAction.value;
     } catch (error) {
       console.error("Failed to get post trigger action setting:", error);
@@ -946,6 +948,16 @@ onUnmounted(() => {
                     class="radio-input"
                   />
                   <span class="radio-label">只拍摄</span>
+                </label>
+                <label class="radio-item">
+                  <input
+                    type="radio"
+                    v-model="tempPostTriggerAction"
+                    value="ScreenRecording"
+                    @change="savePostTriggerActionSettings"
+                    class="radio-input"
+                  />
+                  <span class="radio-label">屏幕录制</span>
                 </label>
               </div>
               <label class="checkbox-item">

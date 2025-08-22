@@ -10,6 +10,8 @@ pub enum PostTriggerAction {
     CaptureAndLock,
     /// 只拍摄
     CaptureOnly,
+    /// 屏幕录制
+    ScreenRecording,
 }
 
 impl Default for PostTriggerAction {
@@ -140,6 +142,7 @@ impl AppConfig {
         match self.post_trigger_action {
             PostTriggerAction::CaptureAndLock => state.set_enable_screen_lock(true),
             PostTriggerAction::CaptureOnly => state.set_enable_screen_lock(false),
+            PostTriggerAction::ScreenRecording => state.set_enable_screen_lock(false), // 录屏时也不锁屏
         }
         
         state.set_enable_notifications(self.enable_notifications);

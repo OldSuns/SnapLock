@@ -14,7 +14,7 @@ export interface AppConfig {
   exit_on_lock: boolean;
   enable_screen_lock: boolean;
   enable_notifications: boolean;
-  post_trigger_action: 'CaptureAndLock' | 'CaptureOnly';
+  post_trigger_action: 'CaptureAndLock' | 'CaptureOnly' | 'ScreenRecording';
 }
 
 export interface LogEntry {
@@ -24,7 +24,7 @@ export interface LogEntry {
   target: string;
 }
 
-export type MonitoringStatus = '空闲' | '准备中' | '警戒中';
+export type MonitoringStatus = '空闲' | '准备中' | '警戒中' | '锁定中';
 
 export type PermissionStatus = '未检查' | '已授权' | '被拒绝';
 
