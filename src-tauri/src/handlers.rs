@@ -411,3 +411,29 @@ pub fn set_post_trigger_action(app_handle: tauri::AppHandle, action: crate::conf
     log::info!("触发后动作设置已更新为: {:?}", action);
     Ok(())
 }
+
+/// 获取默认摄像头ID设置
+#[tauri::command]
+pub fn get_default_camera_id() -> Result<Option<u32>, String> {
+    let config = crate::config::AppConfig::load();
+    Ok(config.default_camera_id)
+}
+
+/// 设置默认摄像头ID
+#[tauri::command]
+pub fn set_default_camera_id(app_handle: tauri::AppHandle, camera_id: Option<u32>) -> Result<(), String> {
+    let mut config = crate::config::AppConfig::load();
+    config.default_camera_id = camera_id;
+    
+    // 保存配置
+    config.save().map_err(|e| e.to_string())?;
+    
+    // 如果设置了默认摄像头，同时更新当前状态
+    if let Some(id) = camera_id {
+        let state = app_handle.state::<crate::state::AppState>();
+        state.set_camera_id(id);
+    }
+    
+    log::info!("默认摄像头ID设置已更新为: {:?}", camera_id);
+    Ok(())
+}

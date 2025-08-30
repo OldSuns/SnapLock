@@ -125,7 +125,9 @@ fn main() {
             logger::set_log_to_file,
             logger::set_log_file_path,
             handlers::get_post_trigger_action,
-            handlers::set_post_trigger_action
+            handlers::set_post_trigger_action,
+            handlers::get_default_camera_id,
+            handlers::set_default_camera_id
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

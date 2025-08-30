@@ -15,6 +15,7 @@ export interface AppConfig {
   enable_screen_lock: boolean;
   enable_notifications: boolean;
   post_trigger_action: 'CaptureAndLock' | 'CaptureOnly' | 'ScreenRecording';
+  default_camera_id?: number;
 }
 
 export interface LogEntry {

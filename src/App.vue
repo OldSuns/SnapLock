@@ -54,6 +54,10 @@ const tempPostTriggerAction = ref<'CaptureAndLock' | 'CaptureOnly' | 'ScreenReco
 const enableNotifications = ref<boolean>(true);
 const tempEnableNotifications = ref<boolean>(true);
 
+// 默认摄像头状态
+const defaultCameraId = ref<number | null>(null);
+const tempDefaultCameraId = ref<number | null>(null);
+
 // 日志相关状态
 const showDebugLogs = ref<boolean>(false);
 const saveLogsToFile = ref<boolean>(false);
@@ -148,10 +152,12 @@ async function loadAppConfig(): Promise<boolean> {
     exitOnLock.value = config.exit_on_lock;
     enableNotifications.value = config.enable_notifications ?? true; // 默认启用
     postTriggerAction.value = config.post_trigger_action ?? 'CaptureAndLock'; // 默认拍摄并锁屏
+    defaultCameraId.value = config.default_camera_id ?? null;
     tempIsDarkMode.value = isDarkMode.value;
     tempExitOnLock.value = exitOnLock.value;
     tempEnableNotifications.value = enableNotifications.value;
     tempPostTriggerAction.value = postTriggerAction.value;
+    tempDefaultCameraId.value = defaultCameraId.value;
     
     // 设置保存路径
     const targetPath = config.save_path || await desktopDir();
@@ -198,6 +204,7 @@ function openSettings() {
   tempExitOnLock.value = exitOnLock.value;
   tempEnableNotifications.value = enableNotifications.value;
   tempPostTriggerAction.value = postTriggerAction.value;
+  tempDefaultCameraId.value = defaultCameraId.value;
   
   showSettings.value = true;
   
@@ -481,6 +488,21 @@ async function savePostTriggerActionSettings() {
   }
 }
 
+// 保存默认摄像头设置
+async function saveDefaultCameraSettings() {
+  try {
+    if (tempDefaultCameraId.value !== defaultCameraId.value) {
+      await invoke("set_default_camera_id", { cameraId: tempDefaultCameraId.value });
+      defaultCameraId.value = tempDefaultCameraId.value;
+      console.log("默认摄像头设置已更新为:", defaultCameraId.value);
+    }
+  } catch (error) {
+    console.error("Failed to save default camera settings:", error);
+    // 恢复到之前的值
+    tempDefaultCameraId.value = defaultCameraId.value;
+  }
+}
+
 // ===== 自定义拖拽调整功能 =====
 let isDragging = false;
 let startY = 0;
@@ -587,6 +609,18 @@ onMounted(async () => {
 
   // 加载配置或使用默认设置
   const configLoadedSuccessfully = await loadAppConfig();
+  
+  // 应用默认摄像头设置
+  if (defaultCameraId.value !== null && cameraList.value.length > 0) {
+    // 检查默认摄像头ID是否在可用摄像头列表中
+    const defaultCamera = cameraList.value.find(cam => cam.id === defaultCameraId.value);
+    if (defaultCamera) {
+      selectedCameraId.value = defaultCameraId.value;
+    } else {
+      console.warn("默认摄像头不在可用列表中，使用第一个摄像头");
+      selectedCameraId.value = cameraList.value[0].id;
+    }
+  }
 
   // 获取当前快捷键
   try {
@@ -668,6 +702,14 @@ onMounted(async () => {
       tempPostTriggerAction.value = postTriggerAction.value;
     } catch (error) {
       console.error("Failed to get post trigger action setting:", error);
+    }
+    
+    // 获取默认摄像头设置
+    try {
+      defaultCameraId.value = await invoke<number | null>("get_default_camera_id");
+      tempDefaultCameraId.value = defaultCameraId.value;
+    } catch (error) {
+      console.error("Failed to get default camera setting:", error);
     }
   }
 
@@ -863,41 +905,61 @@ onUnmounted(() => {
           <div class="setting-item">
             <label class="setting-label">
               <span class="setting-icon">📷</span>
-              相机预览
+              相机设置
             </label>
-            <div class="camera-controls">
-              <div class="camera-status">
-                <span class="status-text">权限状态: </span>
-                <span class="permission-status" :class="getPermissionStatusClass(cameraPermissionStatus)">
-                  {{ cameraPermissionStatus }}
-                </span>
-                <button
-                  @click="checkCameraPermission"
-                  :disabled="isCheckingPermission"
-                  class="check-permission-button"
-                  title="检查相机权限"
-                >
-                  {{ isCheckingPermission ? '⏳' : '🔄' }}
-                </button>
+            <div class="camera-settings">
+              <div class="setting-sub-item">
+                <label class="setting-sub-label">默认摄像头</label>
+                <div class="select-wrapper">
+                  <select v-model="tempDefaultCameraId" @change="saveDefaultCameraSettings" class="custom-select">
+                    <option :value="null">不设置默认摄像头</option>
+                    <option v-for="cam in cameraList" :key="cam.id" :value="cam.id">
+                      {{ cam.name }}
+                    </option>
+                  </select>
+                </div>
+                <div class="setting-description">
+                  设置启动时自动选择的摄像头，留空则使用第一个可用摄像头
+                </div>
               </div>
-              <div class="preview-controls">
-                <button
-                  @click="toggleCameraPreview"
-                  :disabled="cameraPermissionStatus !== '已授权'"
-                  class="preview-toggle-button"
-                  :class="{ 'active': showCameraPreview }"
-                >
-                  {{ showCameraPreview ? '隐藏预览' : '显示预览' }}
-                </button>
-              </div>
-              <div v-if="showCameraPreview && cameraPreviewUrl" class="camera-preview">
-                <img :src="cameraPreviewUrl" alt="相机预览" class="preview-image" />
-                <button @click="updateCameraPreview" class="refresh-preview-button" title="刷新预览">
-                  🔄
-                </button>
-              </div>
-              <div v-else-if="showCameraPreview && !cameraPreviewUrl" class="preview-placeholder">
-                <span>正在加载预览...</span>
+              
+              <div class="setting-sub-item">
+                <label class="setting-sub-label">相机预览</label>
+                <div class="camera-controls">
+                  <div class="camera-status">
+                    <span class="status-text">权限状态: </span>
+                    <span class="permission-status" :class="getPermissionStatusClass(cameraPermissionStatus)">
+                      {{ cameraPermissionStatus }}
+                    </span>
+                    <button
+                      @click="checkCameraPermission"
+                      :disabled="isCheckingPermission"
+                      class="check-permission-button"
+                      title="检查相机权限"
+                    >
+                      {{ isCheckingPermission ? '⏳' : '🔄' }}
+                    </button>
+                  </div>
+                  <div class="preview-controls">
+                    <button
+                      @click="toggleCameraPreview"
+                      :disabled="cameraPermissionStatus !== '已授权'"
+                      class="preview-toggle-button"
+                      :class="{ 'active': showCameraPreview }"
+                    >
+                      {{ showCameraPreview ? '隐藏预览' : '显示预览' }}
+                    </button>
+                  </div>
+                  <div v-if="showCameraPreview && cameraPreviewUrl" class="camera-preview">
+                    <img :src="cameraPreviewUrl" alt="相机预览" class="preview-image" />
+                    <button @click="updateCameraPreview" class="refresh-preview-button" title="刷新预览">
+                      🔄
+                    </button>
+                  </div>
+                  <div v-else-if="showCameraPreview && !cameraPreviewUrl" class="preview-placeholder">
+                    <span>正在加载预览...</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1216,10 +1278,29 @@ onUnmounted(() => {
 .theme-controls,
 .security-controls,
 .screen-lock-controls,
-.notification-controls {
+.notification-controls,
+.camera-settings {
   display: flex !important;
   flex-direction: column !important;
   gap: 0.75rem !important;
+}
+
+/* 相机设置子项样式 */
+.setting-sub-item {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.5rem !important;
+  padding: 0.75rem !important;
+  border: 1px solid var(--border-primary) !important;
+  border-radius: 8px !important;
+  background: var(--bg-secondary) !important;
+}
+
+.setting-sub-label {
+  font-size: 0.9rem !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  margin: 0 !important;
 }
 
 /* 设置描述文本样式 */

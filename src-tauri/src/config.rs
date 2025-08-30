@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub post_trigger_action: PostTriggerAction,
     #[serde(default = "default_enable_notifications")]
     pub enable_notifications: bool,
+    #[serde(default)]
+    pub default_camera_id: Option<u32>,
 }
 
 impl Default for AppConfig {
@@ -50,6 +52,7 @@ impl Default for AppConfig {
             exit_on_lock: false,
             post_trigger_action: PostTriggerAction::CaptureAndLock,
             enable_notifications: true, // 默认启用系统通知
+            default_camera_id: None, // 默认不设置摄像头ID
         }
     }
 }
@@ -122,6 +125,9 @@ impl AppConfig {
         self.post_trigger_action = state.post_trigger_action();
         
         self.enable_notifications = state.enable_notifications();
+        
+        // 更新默认摄像头ID
+        self.default_camera_id = Some(state.camera_id());
     }
 
     /// 将配置应用到应用状态
@@ -146,6 +152,11 @@ impl AppConfig {
         }
         
         state.set_enable_notifications(self.enable_notifications);
+        
+        // 应用默认摄像头ID设置
+        if let Some(camera_id) = self.default_camera_id {
+            state.set_camera_id(camera_id);
+        }
     }
 
 }
