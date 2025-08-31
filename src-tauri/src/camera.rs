@@ -7,7 +7,7 @@ use nokhwa::{
     utils::{ApiBackend, CameraIndex, CameraInfo},
 };
 use std::path::PathBuf;
-use tauri::{command, Manager};
+use tauri::{command, Manager, AppHandle};
 use serde::Serialize;
 
 /// Camera information for frontend
@@ -321,6 +321,179 @@ pub async fn get_camera_preview(camera_id: u32) -> Result<String, String> {
         // 转换为base64
         let base64_image = general_purpose::STANDARD.encode(&jpeg_buffer);
         Ok(format!("data:image/jpeg;base64,{}", base64_image))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+// 录像相关状态管理
+use std::sync::Mutex;
+use std::collections::HashMap;
+use std::process::{Child, Command, Stdio};
+
+
+lazy_static::lazy_static! {
+    static ref VIDEO_PROCESSES: Mutex<HashMap<u32, Child>> = Mutex::new(HashMap::new());
+}
+
+/// 开始录像
+pub async fn start_video_recording(app_handle: AppHandle, camera_id: u32, save_path: Option<String>, duration_seconds: Option<u32>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        // 验证相机ID
+        let _camera_info = validate_camera_id(camera_id)?;
+        
+        // 确定保存路径
+        let base_path = match save_path {
+            Some(path) => PathBuf::from(path),
+            None => dirs::desktop_dir()
+                .ok_or_else(|| "Desktop directory not found".to_string())?,
+        };
+
+        // 确保目录存在
+        if !base_path.exists() {
+            std::fs::create_dir_all(&base_path)
+                .map_err(|e| format!("Failed to create save directory '{}': {}", base_path.display(), e))?;
+        }
+
+        // 生成文件名
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+        let filename = format!("snaplock_video_{}.mkv", timestamp);
+        let filepath = base_path.join(&filename);
+
+        // 使用程序打包的ffmpeg
+        let ffmpeg_path = match app_handle.path().resolve("libs/ffmpeg/bin/ffmpeg.exe", tauri::path::BaseDirectory::Resource) {
+            Ok(path) => path,
+            Err(e) => return Err(format!("无法解析ffmpeg路径: {}", e)),
+        };
+
+        // 使用简化的录像命令
+        let result = try_simple_recording(&ffmpeg_path.to_string_lossy(), camera_id, &filepath, duration_seconds);
+        
+        match result {
+            Ok(child) => {
+                // 存储进程句柄
+                let mut processes = VIDEO_PROCESSES.lock().unwrap();
+                processes.insert(camera_id, child);
+                
+                println!("Started video recording for camera {} to: {}", camera_id, filepath.display());
+                Ok(filepath.to_string_lossy().to_string())
+            }
+            Err(e) => Err(format!("Failed to start video recording: {}", e))
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 尝试使用简化的录像命令
+fn try_simple_recording(ffmpeg_path: &str, camera_id: u32, filepath: &PathBuf, duration_seconds: Option<u32>) -> Result<Child, String> {
+    let duration = duration_seconds.unwrap_or(5); // 默认5秒
+    let mut command = Command::new(ffmpeg_path);
+    
+    if cfg!(target_os = "windows") {
+        // 获取摄像头信息以确定正确的设备名称
+        let camera_info = validate_camera_id(camera_id)?;
+        let device_name = camera_info.human_name();
+        
+        command
+            .arg("-f")
+            .arg("dshow")
+            .arg("-i")
+            .arg(format!("video={}", device_name))
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg("ultrafast")
+            .arg("-crf")
+            .arg("25")
+            .arg("-pix_fmt")
+            .arg("yuv420p")
+            .arg("-t")
+            .arg(&duration.to_string()) // 使用指定的录制时间
+            .arg("-y")
+            .arg(filepath);
+    } else {
+        command
+            .arg("-f")
+            .arg("v4l2")
+            .arg("-i")
+            .arg(format!("/dev/video{}", camera_id))
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg("ultrafast")
+            .arg("-crf")
+            .arg("25")
+            .arg("-pix_fmt")
+            .arg("yuv420p")
+            .arg("-t")
+            .arg(&duration.to_string()) // 使用指定的录制时间
+            .arg("-y")
+            .arg(filepath);
+    }
+
+    println!("Trying simple recording command: {:?}", command);
+    
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            let cmd_str = format!("{:?}", command);
+            format!("Failed to start ffmpeg process: {}. Command: {}", e, cmd_str)
+        })
+}
+
+
+
+
+
+/// 停止录像
+pub async fn stop_video_recording() -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut processes = VIDEO_PROCESSES.lock().unwrap();
+        
+        for (camera_id, child) in processes.iter_mut() {
+            println!("Stopping video recording for camera {}", camera_id);
+            
+            // 尝试优雅地终止进程
+            if let Err(e) = child.kill() {
+                eprintln!("Failed to kill ffmpeg process for camera {}: {}", camera_id, e);
+            }
+            
+            // 等待进程结束，最多等待3秒
+            let timeout = std::time::Duration::from_secs(3);
+            let start = std::time::Instant::now();
+            
+            while start.elapsed() < timeout {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        println!("FFmpeg process for camera {} exited with status: {:?}", camera_id, status);
+                        break;
+                    }
+                    Ok(None) => {
+                        // 进程还在运行，继续等待
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        eprintln!("Error waiting for ffmpeg process for camera {}: {}", camera_id, e);
+                        break;
+                    }
+                }
+            }
+            
+            // 如果进程还在运行，强制终止
+            if child.try_wait().unwrap_or(None).is_none() {
+                println!("Force killing ffmpeg process for camera {}", camera_id);
+                if let Err(e) = child.kill() {
+                    eprintln!("Failed to force kill ffmpeg process for camera {}: {}", camera_id, e);
+                }
+            }
+        }
+        
+        processes.clear();
+        println!("All video recordings stopped");
+        Ok(())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?

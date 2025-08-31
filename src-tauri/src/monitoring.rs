@@ -275,14 +275,16 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         log::error!("无法发送锁定状态事件: {}", e);
     });
     
-    let (camera_id, save_path, exit_on_lock_enabled, post_trigger_action, notifications_enabled) = {
+    let (camera_id, save_path, exit_on_lock_enabled, post_trigger_action, notifications_enabled, capture_delay_seconds, capture_mode) = {
         let state = app_handle.state::<AppState>();
         let camera_id = state.camera_id();
         let save_path = state.save_path();
         let exit_on_lock = state.exit_on_lock();
         let post_trigger_action = state.post_trigger_action();
         let notifications = state.enable_notifications();
-        (camera_id, save_path, exit_on_lock, post_trigger_action, notifications)
+        let capture_delay = state.capture_delay_seconds();
+        let capture_mode = state.capture_mode();
+        (camera_id, save_path, exit_on_lock, post_trigger_action, notifications, capture_delay, capture_mode)
     };
     
     let screen_lock_enabled = match post_trigger_action {
@@ -291,32 +293,17 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         crate::config::PostTriggerAction::ScreenRecording => false,
     };
 
-    log::info!("监控触发，使用摄像头ID: {}, 触发后动作: {:?}, 通知功能: {}, 锁定时退出: {}",
-        camera_id, post_trigger_action, notifications_enabled, exit_on_lock_enabled);
+    log::info!("监控触发，使用摄像头ID: {}, 触发后动作: {:?}, 通知功能: {}, 锁定时退出: {}, 拍摄延迟: {}秒, 拍摄模式: {:?}",
+        camera_id, post_trigger_action, notifications_enabled, exit_on_lock_enabled, capture_delay_seconds, capture_mode);
 
-    if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
-        log::info!("开始屏幕录制...");
-        // This block is now primarily for legacy or non-idle-check scenarios.
-        // The main logic is in the idle_check_loop.
-        let app_handle_clone = app_handle.clone();
-        if let Err(e) = crate::recorder::start_screen_recording(app_handle_clone).await {
-            log::error!("启动屏幕录制失败: {}", e);
-        } else {
-            log::info!("屏幕录制已启动");
-            log::info!("开始拍照...");
-            if let Err(e) = camera::take_photo(camera_id, save_path).await {
-                log::error!("拍照失败: {}", e);
-            } else {
-                log::info!("拍照完成");
-            }
-        }
+    // 执行延迟拍摄逻辑
+    if capture_delay_seconds > 0 {
+        log::info!("开始延迟拍摄流程，持续录制 {} 秒...", capture_delay_seconds);
+        await_delayed_capture(app_handle.clone(), camera_id, save_path, capture_delay_seconds, capture_mode).await;
     } else {
-        log::info!("开始拍照...");
-        if let Err(e) = camera::take_photo(camera_id, save_path).await {
-            log::error!("拍照失败: {}", e);
-        } else {
-            log::info!("拍照完成");
-        }
+        // 无延迟，直接执行原有逻辑
+        log::info!("无延迟设置，直接执行拍摄...");
+        execute_capture_and_lock(app_handle.clone(), camera_id, save_path, post_trigger_action.clone()).await;
     }
 
     if notifications_enabled {
@@ -386,6 +373,76 @@ fn send_security_notification(app_handle: &AppHandle) {
         }
         Err(e) => {
             log::error!("发送安全通知失败: {}", e);
+        }
+    }
+}
+
+/// 执行延迟拍摄逻辑
+async fn await_delayed_capture(
+    app_handle: AppHandle,
+    camera_id: u32,
+    save_path: Option<String>,
+    delay_seconds: u32,
+    capture_mode: crate::config::CaptureMode,
+) {
+    log::info!("开始延迟拍摄，模式: {:?}, 延迟: {}秒", capture_mode, delay_seconds);
+    
+        // 录像模式：使用ffmpeg的-t参数限制录制时间，让ffmpeg自然完成
+    log::info!("录像模式：开始录制，持续 {} 秒...", delay_seconds);
+    
+    // 启动摄像头录制（ffmpeg会自动在指定时间后停止）
+    if let Err(e) = camera::start_video_recording(app_handle, camera_id, save_path, Some(delay_seconds)).await {
+        log::error!("启动录像失败: {}", e);
+        return;
+    }
+    
+    log::info!("录像已开始，ffmpeg将在 {} 秒后自动停止...", delay_seconds);
+    
+    // 等待录制完成（ffmpeg会自动停止）
+    sleep(Duration::from_secs((delay_seconds + 2).into())).await; // 多等2秒确保完成
+    
+    // 清理任何残留的进程
+    log::info!("清理录像进程...");
+    if let Err(e) = camera::stop_video_recording().await {
+        log::error!("清理录像进程失败: {}", e);
+    } else {
+        log::info!("录像完成并清理完成");
+    }
+    
+    // 等待一段时间确保文件写入完成
+    log::info!("等待文件写入完成...");
+    sleep(Duration::from_millis(2000)).await;
+}
+
+/// 执行原有的拍摄和锁定逻辑
+async fn execute_capture_and_lock(
+    app_handle: AppHandle,
+    camera_id: u32,
+    save_path: Option<String>,
+    post_trigger_action: crate::config::PostTriggerAction,
+) {
+    if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
+        log::info!("开始屏幕录制...");
+        // This block is now primarily for legacy or non-idle-check scenarios.
+        // The main logic is in the idle_check_loop.
+        let app_handle_clone = app_handle.clone();
+        if let Err(e) = crate::recorder::start_screen_recording(app_handle_clone).await {
+            log::error!("启动屏幕录制失败: {}", e);
+        } else {
+            log::info!("屏幕录制已启动");
+            log::info!("开始拍照...");
+            if let Err(e) = camera::take_photo(camera_id, save_path).await {
+                log::error!("拍照失败: {}", e);
+            } else {
+                log::info!("拍照完成");
+            }
+        }
+    } else {
+        log::info!("开始拍照...");
+        if let Err(e) = camera::take_photo(camera_id, save_path).await {
+            log::error!("拍照失败: {}", e);
+        } else {
+            log::info!("拍照完成");
         }
     }
 }

@@ -127,7 +127,11 @@ fn main() {
             handlers::get_post_trigger_action,
             handlers::set_post_trigger_action,
             handlers::get_default_camera_id,
-            handlers::set_default_camera_id
+            handlers::set_default_camera_id,
+            handlers::get_capture_delay_seconds,
+            handlers::set_capture_delay_seconds,
+            handlers::get_capture_mode,
+            handlers::set_capture_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -16,6 +16,9 @@ export interface AppConfig {
   enable_notifications: boolean;
   post_trigger_action: 'CaptureAndLock' | 'CaptureOnly' | 'ScreenRecording';
   default_camera_id?: number;
+  // 新增拍摄时间设置
+  capture_delay_seconds: number;
+  capture_mode: 'Video';
 }
 
 export interface LogEntry {

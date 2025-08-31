@@ -58,6 +58,12 @@ const tempEnableNotifications = ref<boolean>(true);
 const defaultCameraId = ref<number | null>(null);
 const tempDefaultCameraId = ref<number | null>(null);
 
+// 拍摄延时设置状态
+const captureDelaySeconds = ref<number>(0);
+const tempCaptureDelaySeconds = ref<number>(0);
+const captureMode = ref<'Photo' | 'Video'>('Photo');
+const tempCaptureMode = ref<'Photo' | 'Video'>('Photo');
+
 // 日志相关状态
 const showDebugLogs = ref<boolean>(false);
 const saveLogsToFile = ref<boolean>(false);
@@ -153,11 +159,15 @@ async function loadAppConfig(): Promise<boolean> {
     enableNotifications.value = config.enable_notifications ?? true; // 默认启用
     postTriggerAction.value = config.post_trigger_action ?? 'CaptureAndLock'; // 默认拍摄并锁屏
     defaultCameraId.value = config.default_camera_id ?? null;
+    captureDelaySeconds.value = config.capture_delay_seconds ?? 0; // 默认0秒
+    captureMode.value = config.capture_mode ?? 'Video'; // 默认录像模式
     tempIsDarkMode.value = isDarkMode.value;
     tempExitOnLock.value = exitOnLock.value;
     tempEnableNotifications.value = enableNotifications.value;
     tempPostTriggerAction.value = postTriggerAction.value;
     tempDefaultCameraId.value = defaultCameraId.value;
+    tempCaptureDelaySeconds.value = captureDelaySeconds.value;
+    tempCaptureMode.value = captureMode.value;
     
     // 设置保存路径
     const targetPath = config.save_path || await desktopDir();
@@ -205,6 +215,8 @@ function openSettings() {
   tempEnableNotifications.value = enableNotifications.value;
   tempPostTriggerAction.value = postTriggerAction.value;
   tempDefaultCameraId.value = defaultCameraId.value;
+  tempCaptureDelaySeconds.value = captureDelaySeconds.value;
+  tempCaptureMode.value = captureMode.value;
   
   showSettings.value = true;
   
@@ -503,6 +515,23 @@ async function saveDefaultCameraSettings() {
   }
 }
 
+// 保存拍摄延迟时间设置
+async function saveCaptureDelaySettings() {
+  try {
+    if (tempCaptureDelaySeconds.value !== captureDelaySeconds.value) {
+      await invoke("set_capture_delay_seconds", { delay: tempCaptureDelaySeconds.value });
+      captureDelaySeconds.value = tempCaptureDelaySeconds.value;
+      console.log("拍摄延迟时间设置已更新为:", captureDelaySeconds.value);
+    }
+  } catch (error) {
+    console.error("Failed to save capture delay settings:", error);
+    // 恢复到之前的值
+    tempCaptureDelaySeconds.value = captureDelaySeconds.value;
+  }
+}
+
+
+
 // ===== 自定义拖拽调整功能 =====
 let isDragging = false;
 let startY = 0;
@@ -710,6 +739,21 @@ onMounted(async () => {
       tempDefaultCameraId.value = defaultCameraId.value;
     } catch (error) {
       console.error("Failed to get default camera setting:", error);
+    }
+    
+    // 获取拍摄延时设置
+    try {
+      captureDelaySeconds.value = await invoke<number>("get_capture_delay_seconds");
+      tempCaptureDelaySeconds.value = captureDelaySeconds.value;
+    } catch (error) {
+      console.error("Failed to get capture delay setting:", error);
+    }
+    
+    try {
+      captureMode.value = await invoke<'Photo' | 'Video'>("get_capture_mode");
+      tempCaptureMode.value = captureMode.value;
+    } catch (error) {
+      console.error("Failed to get capture mode setting:", error);
     }
   }
 
@@ -1035,6 +1079,31 @@ onUnmounted(() => {
 
           <div class="setting-item">
             <label class="setting-label">
+              <span class="setting-icon">⏱️</span>
+              拍摄延时设置
+            </label>
+            <div class="capture-time-controls">
+              <div class="delay-input-group">
+                <span class="delay-unit">持续</span>
+                <input
+                  type="number"
+                  v-model="tempCaptureDelaySeconds"
+                  @change="saveCaptureDelaySettings"
+                  min="0"
+                  max="60"
+                  class="setting-input delay-input"
+                  placeholder="0"
+                />
+                <span class="delay-unit">秒</span>
+              </div>
+              <div class="setting-description">
+                检测到行为后持续录制的时间，<br>范围0-60秒（0秒表示不录像直接拍照）
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <label class="setting-label">
               <span class="setting-icon">📢</span>
               通知选项
             </label>
@@ -1279,7 +1348,8 @@ onUnmounted(() => {
 .security-controls,
 .screen-lock-controls,
 .notification-controls,
-.camera-settings {
+.camera-settings,
+.capture-time-controls {
   display: flex !important;
   flex-direction: column !important;
   gap: 0.75rem !important;
@@ -1310,6 +1380,24 @@ onUnmounted(() => {
   margin-top: 0.25rem !important;
   line-height: 1.4 !important;
   opacity: 0.8 !important;
+}
+
+/* 延迟输入组样式 */
+.delay-input-group {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+}
+
+.delay-input {
+  width: 80px !important;
+  text-align: center !important;
+}
+
+.delay-unit {
+  font-size: 0.9rem !important;
+  color: var(--text-secondary) !important;
+  font-weight: 500 !important;
 }
 
 /* 单选按钮样式 */

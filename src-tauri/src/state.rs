@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use crate::config::PostTriggerAction;
+use crate::config::{PostTriggerAction, CaptureMode};
 
 /// Represents the monitoring status of the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +65,10 @@ pub struct AppState {
     pub(crate) enable_notifications: Mutex<bool>,
     /// Post trigger action setting
     pub(crate) post_trigger_action: Mutex<PostTriggerAction>,
+    /// Capture delay in seconds
+    pub(crate) capture_delay_seconds: Mutex<u32>,
+    /// Capture mode setting
+    pub(crate) capture_mode: Mutex<CaptureMode>,
 }
 
 impl AppState {
@@ -82,6 +86,8 @@ impl AppState {
             enable_screen_lock: Mutex::new(true), // 默认启用锁屏功能
             enable_notifications: Mutex::new(true), // 默认启用系统通知
             post_trigger_action: Mutex::new(PostTriggerAction::CaptureAndLock), // 默认拍摄并锁屏
+            capture_delay_seconds: Mutex::new(0), // 默认0秒延迟
+            capture_mode: Mutex::new(CaptureMode::Video), // 默认录像模式
         }
     }
 
@@ -195,6 +201,22 @@ impl AppState {
     
     pub fn set_post_trigger_action(&self, action: PostTriggerAction) {
         *self.post_trigger_action.lock().unwrap() = action;
+    }
+
+    pub fn capture_delay_seconds(&self) -> u32 {
+        *self.capture_delay_seconds.lock().unwrap()
+    }
+
+    pub fn set_capture_delay_seconds(&self, delay: u32) {
+        *self.capture_delay_seconds.lock().unwrap() = delay;
+    }
+
+    pub fn capture_mode(&self) -> CaptureMode {
+        self.capture_mode.lock().unwrap().clone()
+    }
+
+    pub fn set_capture_mode(&self, mode: CaptureMode) {
+        *self.capture_mode.lock().unwrap() = mode;
     }
 }
 

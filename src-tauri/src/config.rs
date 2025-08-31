@@ -20,9 +20,27 @@ impl Default for PostTriggerAction {
     }
 }
 
+/// 拍摄模式选项
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CaptureMode {
+    /// 录像模式
+    Video,
+}
+
+impl Default for CaptureMode {
+    fn default() -> Self {
+        CaptureMode::Video
+    }
+}
+
 /// 为启用系统通知提供默认值
 fn default_enable_notifications() -> bool {
     true
+}
+
+/// 为拍摄延迟时间提供默认值
+fn default_capture_delay_seconds() -> u32 {
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +57,10 @@ pub struct AppConfig {
     pub enable_notifications: bool,
     #[serde(default)]
     pub default_camera_id: Option<u32>,
+    #[serde(default = "default_capture_delay_seconds")]
+    pub capture_delay_seconds: u32,
+    #[serde(default)]
+    pub capture_mode: CaptureMode,
 }
 
 impl Default for AppConfig {
@@ -53,6 +75,8 @@ impl Default for AppConfig {
             post_trigger_action: PostTriggerAction::CaptureAndLock,
             enable_notifications: true, // 默认启用系统通知
             default_camera_id: None, // 默认不设置摄像头ID
+            capture_delay_seconds: 0, // 默认0秒延迟
+            capture_mode: CaptureMode::Video, // 默认录像模式
         }
     }
 }
@@ -128,6 +152,10 @@ impl AppConfig {
         
         // 更新默认摄像头ID
         self.default_camera_id = Some(state.camera_id());
+        
+        // 更新拍摄时间设置
+        self.capture_delay_seconds = state.capture_delay_seconds();
+        self.capture_mode = state.capture_mode();
     }
 
     /// 将配置应用到应用状态
@@ -157,6 +185,10 @@ impl AppConfig {
         if let Some(camera_id) = self.default_camera_id {
             state.set_camera_id(camera_id);
         }
+        
+        // 应用拍摄时间设置
+        state.set_capture_delay_seconds(self.capture_delay_seconds);
+        state.set_capture_mode(self.capture_mode.clone());
     }
 
 }

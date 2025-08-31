@@ -437,3 +437,47 @@ pub fn set_default_camera_id(app_handle: tauri::AppHandle, camera_id: Option<u32
     log::info!("默认摄像头ID设置已更新为: {:?}", camera_id);
     Ok(())
 }
+
+/// 获取拍摄延迟时间设置
+#[tauri::command]
+pub fn get_capture_delay_seconds(app_handle: tauri::AppHandle) -> Result<u32, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    Ok(state.capture_delay_seconds())
+}
+
+/// 设置拍摄延迟时间
+#[tauri::command]
+pub fn set_capture_delay_seconds(app_handle: tauri::AppHandle, delay: u32) -> Result<(), String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    state.set_capture_delay_seconds(delay);
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("拍摄延迟时间设置已更新为: {}秒", delay);
+    Ok(())
+}
+
+/// 获取拍摄模式设置
+#[tauri::command]
+pub fn get_capture_mode(app_handle: tauri::AppHandle) -> Result<crate::config::CaptureMode, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    Ok(state.capture_mode())
+}
+
+/// 设置拍摄模式
+#[tauri::command]
+pub fn set_capture_mode(app_handle: tauri::AppHandle, mode: crate::config::CaptureMode) -> Result<(), String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    state.set_capture_mode(mode.clone());
+    
+    // 自动保存配置
+    if let Err(e) = crate::config::save_config(app_handle.clone()) {
+        log::warn!("保存配置失败: {}", e);
+    }
+    
+    log::info!("拍摄模式设置已更新为: {:?}", mode);
+    Ok(())
+}
