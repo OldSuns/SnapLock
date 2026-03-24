@@ -3,8 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+const MAX_CAPTURE_DELAY_SECONDS: u32 = 60;
+
 /// 触发后动作选项
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PostTriggerAction {
     /// 拍摄并锁屏
     CaptureAndLock,
@@ -21,7 +23,7 @@ impl Default for PostTriggerAction {
 }
 
 /// 拍摄模式选项
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CaptureMode {
     /// 录像模式
     Video,
@@ -41,6 +43,10 @@ fn default_enable_notifications() -> bool {
 /// 为拍摄延迟时间提供默认值
 fn default_capture_delay_seconds() -> u32 {
     0
+}
+
+fn normalize_capture_delay(delay: u32) -> u32 {
+    delay.min(MAX_CAPTURE_DELAY_SECONDS)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,10 +79,10 @@ impl Default for AppConfig {
             dark_mode: false,
             exit_on_lock: false,
             post_trigger_action: PostTriggerAction::CaptureAndLock,
-            enable_notifications: true, // 默认启用系统通知
-            default_camera_id: None, // 默认不设置摄像头ID
-            capture_delay_seconds: 0, // 默认0秒延迟
-            capture_mode: CaptureMode::Video, // 默认录像模式
+            enable_notifications: true,
+            default_camera_id: None,
+            capture_delay_seconds: 0,
+            capture_mode: CaptureMode::Video,
         }
     }
 }
@@ -89,23 +95,26 @@ impl AppConfig {
         Ok(config_path)
     }
 
+    fn sanitize(mut self) -> Self {
+        self.capture_delay_seconds = normalize_capture_delay(self.capture_delay_seconds);
+        self
+    }
+
     /// 从文件加载配置
     pub fn load() -> Self {
         match Self::get_config_path() {
             Ok(config_path) => {
                 if config_path.exists() {
                     match fs::read_to_string(&config_path) {
-                        Ok(content) => {
-                            match serde_json::from_str::<AppConfig>(&content) {
-                                Ok(config) => {
-                                    println!("配置文件加载成功: {:?}", config_path);
-                                    return config;
-                                }
-                                Err(e) => {
-                                    log::error!("配置文件解析失败: {}", e);
-                                }
+                        Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
+                            Ok(config) => {
+                                println!("配置文件加载成功: {:?}", config_path);
+                                return config.sanitize();
                             }
-                        }
+                            Err(e) => {
+                                log::error!("配置文件解析失败: {}", e);
+                            }
+                        },
                         Err(e) => {
                             log::error!("读取配置文件失败: {}", e);
                         }
@@ -118,20 +127,19 @@ impl AppConfig {
                 log::error!("获取配置文件路径失败: {}", e);
             }
         }
-        
+
         Self::default()
     }
 
     /// 保存配置到文件
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = Self::get_config_path()?;
-        
-        let content = serde_json::to_string_pretty(self)
+        let content = serde_json::to_string_pretty(&self.clone().sanitize())
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
+
         fs::write(&config_path, content)
             .map_err(|e| format!("Failed to write config file: {}", e))?;
-        
+
         println!("配置文件已保存: {:?}", config_path);
         Ok(())
     }
@@ -144,66 +152,48 @@ impl AppConfig {
         self.save_logs_to_file = state.save_logs_to_file();
         self.exit_on_lock = state.exit_on_lock();
         self.dark_mode = state.dark_mode();
-        
-        // 直接使用post_trigger_action状态
         self.post_trigger_action = state.post_trigger_action();
-        
         self.enable_notifications = state.enable_notifications();
-        
-        // 更新默认摄像头ID
-        self.default_camera_id = Some(state.camera_id());
-        
-        // 更新拍摄时间设置
-        self.capture_delay_seconds = state.capture_delay_seconds();
+        self.default_camera_id = state.default_camera_id();
+        self.capture_delay_seconds = normalize_capture_delay(state.capture_delay_seconds());
         self.capture_mode = state.capture_mode();
     }
 
     /// 将配置应用到应用状态
     pub fn apply_to_state(&self, state: &crate::state::AppState) {
         state.set_shortcut_key(self.shortcut_key.clone());
-        
-        // 总是设置save_path状态，无论配置中是Some还是None
-        // 这确保配置文件中的设置（包括None）总是优先于默认值
         state.set_save_path(self.save_path.clone());
-        
         state.set_show_debug_logs(self.show_debug_logs);
         state.set_save_logs_to_file(self.save_logs_to_file);
         state.set_exit_on_lock(self.exit_on_lock);
         state.set_dark_mode(self.dark_mode);
-        
-        // 根据post_trigger_action设置enable_screen_lock状态
-        // 这是为了向后兼容旧代码
-        match self.post_trigger_action {
-            PostTriggerAction::CaptureAndLock => state.set_enable_screen_lock(true),
-            PostTriggerAction::CaptureOnly => state.set_enable_screen_lock(false),
-            PostTriggerAction::ScreenRecording => state.set_enable_screen_lock(false), // 录屏时也不锁屏
-        }
-        
+        state.set_post_trigger_action(self.post_trigger_action.clone());
         state.set_enable_notifications(self.enable_notifications);
-        
-        // 应用默认摄像头ID设置
+        state.set_default_camera_id(self.default_camera_id);
+
         if let Some(camera_id) = self.default_camera_id {
             state.set_camera_id(camera_id);
         }
-        
-        // 应用拍摄时间设置
-        state.set_capture_delay_seconds(self.capture_delay_seconds);
-        state.set_capture_mode(self.capture_mode.clone());
-    }
 
+        state.set_capture_delay_seconds(normalize_capture_delay(self.capture_delay_seconds));
+        state.set_capture_mode(self.capture_mode.clone());
+
+        if self.save_logs_to_file {
+            if let Some(logger) = crate::logger::get_logger() {
+                logger.set_log_file_path(Some(state.get_effective_save_path()));
+            }
+        }
+    }
 }
 
 /// 获取默认保存路径（桌面）
 pub fn get_default_save_path() -> String {
     match dirs::desktop_dir() {
         Some(desktop) => desktop.to_string_lossy().to_string(),
-        None => {
-            // 如果无法获取桌面路径，使用当前目录
-            match std::env::current_dir() {
-                Ok(current) => current.to_string_lossy().to_string(),
-                Err(_) => ".".to_string(), // 最后的后备选项
-            }
-        }
+        None => match std::env::current_dir() {
+            Ok(current) => current.to_string_lossy().to_string(),
+            Err(_) => ".".to_string(),
+        },
     }
 }
 
@@ -213,7 +203,7 @@ pub fn save_config(app_handle: AppHandle) -> Result<(), String> {
     let state = app_handle.state::<crate::state::AppState>();
     let mut config = AppConfig::default();
     config.update_from_state(&state);
-    
+
     config.save().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -231,16 +221,61 @@ pub fn load_config(app_handle: AppHandle) -> Result<AppConfig, String> {
 #[tauri::command]
 pub fn save_dark_mode_setting(app_handle: AppHandle, enabled: bool) -> Result<(), String> {
     let state = app_handle.state::<crate::state::AppState>();
-    
-    // 更新后端状态
     state.set_dark_mode(enabled);
-    
-    // 获取当前状态并保存配置
+
     let mut config = AppConfig::load();
     config.update_from_state(&state);
-    
-    // 保存配置
     config.save().map_err(|e| e.to_string())?;
+
     log::info!("暗色模式设置已保存: {}", enabled);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppConfig, CaptureMode, PostTriggerAction};
+    use crate::state::AppState;
+
+    #[test]
+    fn config_roundtrip_preserves_security_related_fields() {
+        let state = AppState::new(7);
+        state.set_save_path(Some("D:/captures".to_string()));
+        state.set_post_trigger_action(PostTriggerAction::ScreenRecording);
+        state.set_default_camera_id(Some(42));
+        state.set_capture_delay_seconds(15);
+        state.set_capture_mode(CaptureMode::Video);
+
+        let mut config = AppConfig::default();
+        config.update_from_state(&state);
+
+        assert_eq!(config.save_path.as_deref(), Some("D:/captures"));
+        assert_eq!(
+            config.post_trigger_action,
+            PostTriggerAction::ScreenRecording
+        );
+        assert_eq!(config.default_camera_id, Some(42));
+        assert_eq!(config.capture_delay_seconds, 15);
+
+        let restored_state = AppState::new(0);
+        config.apply_to_state(&restored_state);
+
+        assert_eq!(restored_state.save_path().as_deref(), Some("D:/captures"));
+        assert_eq!(
+            restored_state.post_trigger_action(),
+            PostTriggerAction::ScreenRecording
+        );
+        assert_eq!(restored_state.default_camera_id(), Some(42));
+        assert_eq!(restored_state.camera_id(), 42);
+    }
+
+    #[test]
+    fn config_sanitizes_capture_delay() {
+        let config = AppConfig {
+            capture_delay_seconds: 999,
+            ..AppConfig::default()
+        }
+        .sanitize();
+
+        assert_eq!(config.capture_delay_seconds, 60);
+    }
 }

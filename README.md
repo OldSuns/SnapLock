@@ -110,10 +110,6 @@ SnapLock 将安全性作为首要考虑因素：
 - **本地运行**：所有处理都在您的本地机器上完成 - 不会向外部服务器发送任何数据。
 - **最小权限**：应用程序仅请求摄像头访问和系统监控的必要权限。
 - **透明操作**：用户可以通过状态指示器和系统托盘图标完全了解监控何时处于活动状态。
-- **可配置存储**：用户控制拍摄照片和日志的存储位置，确保隐私和数据所有权。
-- **智能状态管理**：系统解锁时自动重置状态，避免残留的安全风险。
-- **进程隔离**：屏幕录制使用 Job Object 技术确保进程安全隔离和清理。
-- **线程安全**：使用 Rust 的并发特性确保多线程操作的安全性。
 
 SnapLock 代表了一种深思熟虑的物理计算机安全方法，在强大保护与用户便利性和系统效率之间取得了平衡。
 
@@ -139,6 +135,27 @@ pnpm install
 # 3. 启动开发服务器
 pnpm tauri dev
 ```
+
+### 构建 Release 安装包
+
+```bash
+# 1. 安装依赖
+pnpm install
+
+# 2. 检查 Rust 后端
+cargo check --manifest-path src-tauri/Cargo.toml
+
+# 3. 构建前端静态资源
+pnpm build
+
+# 4. 生成正式安装包和目录版
+pnpm tauri build
+```
+
+当前仓库的 Tauri bundle target 为 `nsis` 和 `app`，默认产物位置为：
+
+- `src-tauri/target/release/bundle/nsis/`
+- `src-tauri/target/release/bundle/app/`
 
 如果您有任何建议或发现 Bug，请随时提交 [Issues](https://github.com/OldSuns/snaplock/issues) 或 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
 

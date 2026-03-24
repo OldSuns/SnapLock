@@ -19,7 +19,7 @@ export function getStatusIcon(status: string): string {
 export function getStatusText(status: string, shortcut: string): string {
   const textMap: Record<string, string> = {
     '空闲': '启动监控',
-    '准备中': '准备中...',
+    '准备中': `准备中 (${shortcut} 取消)`,
     '警戒中': `警戒中 (${shortcut} 停止)`,
     '锁定中': `等待关闭 (${shortcut} 停止)`
   };

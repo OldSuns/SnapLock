@@ -1,12 +1,12 @@
-use log::{Level, Log, Metadata, Record};
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 use chrono::Local;
+use log::{Level, Log, Metadata, Record};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -27,11 +27,9 @@ impl LogEntry {
     }
 
     pub fn format_for_file(&self) -> String {
-        format!("[{}] [{}] [{}] {}\n", 
-            self.timestamp, 
-            self.level, 
-            self.target, 
-            self.message
+        format!(
+            "[{}] [{}] [{}] {}\n",
+            self.timestamp, self.level, self.target, self.message
         )
     }
 }
@@ -82,11 +80,11 @@ impl AppLogger {
 
         if let Some(base_path) = self.log_file_path.lock().unwrap().as_ref() {
             let log_file_path = Path::new(base_path).join("snaplock_debug.log");
-            
+
             if let Ok(mut file) = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&log_file_path) 
+                .open(&log_file_path)
             {
                 if let Err(e) = file.write_all(entry.format_for_file().as_bytes()) {
                     eprintln!("Failed to write to log file: {}", e);
@@ -102,31 +100,31 @@ impl Log for AppLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         let target = metadata.target();
         let level = metadata.level();
-        
+
         // 完全过滤掉winit相关的日志
         if target.contains("winit") {
             return false;
         }
-        
+
         // 过滤掉wgpu相关的调试日志
         if target.contains("wgpu") && level > Level::Error {
             return false;
         }
-        
+
         // 过滤掉tao相关的日志（Tauri的窗口库）
         if target.contains("tao") {
             return false;
         }
-        
+
         // 过滤掉其他图形相关的库
         if target.contains("wry") && level > Level::Error {
             return false;
         }
-        
+
         // 只记录我们应用的日志和重要的系统错误
-        target.starts_with("snaplock") ||
-        target.starts_with("crate") ||
-        (level <= Level::Info && !target.contains("winit") && !target.contains("tao"))
+        target.starts_with("snaplock")
+            || target.starts_with("crate")
+            || (level <= Level::Info && !target.contains("winit") && !target.contains("tao"))
     }
 
     fn log(&self, record: &Record) {
@@ -135,7 +133,7 @@ impl Log for AppLogger {
         }
 
         let entry = LogEntry::new(record);
-        
+
         // 添加到内存缓冲区
         {
             let mut logs = self.logs.lock().unwrap();
@@ -168,18 +166,18 @@ static LOGGER: OnceLock<AppLogger> = OnceLock::new();
 pub fn init_logger(app_handle: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let mut logger = AppLogger::new(1000); // 最多保存1000条日志
     logger.set_app_handle(app_handle);
-    
+
     if LOGGER.set(logger).is_err() {
         return Err("Logger already initialized".into());
     }
-    
+
     if let Some(logger) = LOGGER.get() {
         if let Err(e) = log::set_logger(logger) {
             return Err(format!("Failed to set logger: {:?}", e).into());
         }
         log::set_max_level(log::LevelFilter::Debug);
     }
-    
+
     Ok(())
 }
 

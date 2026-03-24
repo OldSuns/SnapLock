@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from '@tauri-apps/plugin-dialog';
 import { desktopDir } from '@tauri-apps/api/path';
 
@@ -61,8 +61,8 @@ const tempDefaultCameraId = ref<number | null>(null);
 // 拍摄延时设置状态
 const captureDelaySeconds = ref<number>(0);
 const tempCaptureDelaySeconds = ref<number>(0);
-const captureMode = ref<'Photo' | 'Video'>('Photo');
-const tempCaptureMode = ref<'Photo' | 'Video'>('Photo');
+const captureMode = ref<'Video'>('Video');
+const tempCaptureMode = ref<'Video'>('Video');
 
 // 日志相关状态
 const showDebugLogs = ref<boolean>(false);
@@ -71,6 +71,7 @@ const tempShowDebugLogs = ref<boolean>(false);
 const tempSaveLogsToFile = ref<boolean>(false);
 const logEntries = ref<LogEntry[]>([]);
 const logPanelExpanded = ref<boolean>(false);
+const eventUnlisteners: UnlistenFn[] = [];
 
 // ===== 计算属性 =====
 const statusClass = computed(() => {
@@ -86,12 +87,30 @@ const statusClass = computed(() => {
 });
 
 // ===== 监听器 =====
-watch(selectedCameraId, async (newId) => {
+watch(selectedCameraId, async (newId, oldId) => {
   if (cameraList.value.length > 0) {
     try {
       await invoke("set_camera_id", { cameraId: newId });
     } catch (error) {
       console.error("Failed to set camera ID:", error);
+    }
+  }
+
+  if (newId !== oldId) {
+    cameraPermissionStatus.value = "未检查";
+    cameraPreviewUrl.value = "";
+
+    if (showCameraPreview.value) {
+      const hasPermission = await checkCameraPermission();
+      if (!hasPermission) {
+        showCameraPreview.value = false;
+        return;
+      }
+
+      const previewLoaded = await updateCameraPreview();
+      if (!previewLoaded) {
+        showCameraPreview.value = false;
+      }
     }
   }
 });
@@ -102,7 +121,7 @@ watch(selectedCameraId, async (newId) => {
 async function checkCameraPermission() {
   if (selectedCameraId.value === null || selectedCameraId.value === undefined) {
     cameraPermissionStatus.value = "未检查";
-    return;
+    return false;
   }
   
   isCheckingPermission.value = true;
@@ -111,9 +130,11 @@ async function checkCameraPermission() {
       cameraId: selectedCameraId.value
     });
     cameraPermissionStatus.value = hasPermission ? "已授权" : "被拒绝";
+    return hasPermission;
   } catch (error) {
     console.error("检查相机权限失败:", error);
     cameraPermissionStatus.value = "被拒绝";
+    return false;
   } finally {
     isCheckingPermission.value = false;
   }
@@ -122,7 +143,8 @@ async function checkCameraPermission() {
 // 更新相机预览
 async function updateCameraPreview() {
   if (selectedCameraId.value === null || selectedCameraId.value === undefined) {
-    return;
+    cameraPreviewUrl.value = "";
+    return false;
   }
   
   try {
@@ -130,22 +152,43 @@ async function updateCameraPreview() {
       cameraId: selectedCameraId.value
     });
     cameraPreviewUrl.value = previewData;
+    return true;
   } catch (error) {
     console.error("获取相机预览失败:", error);
     cameraPreviewUrl.value = "";
+    return false;
   }
 }
 
 // 切换相机预览显示
 async function toggleCameraPreview() {
-  showCameraPreview.value = !showCameraPreview.value;
-  
   if (showCameraPreview.value) {
-    await checkCameraPermission();
-    if (cameraPermissionStatus.value === "已授权") {
-      await updateCameraPreview();
-    }
-  } else {
+    showCameraPreview.value = false;
+    cameraPreviewUrl.value = "";
+    return;
+  }
+
+  const hasPermission = await checkCameraPermission();
+  if (!hasPermission) {
+    showCameraPreview.value = false;
+    cameraPreviewUrl.value = "";
+    return;
+  }
+
+  const previewLoaded = await updateCameraPreview();
+  if (!previewLoaded) {
+    showCameraPreview.value = false;
+    cameraPreviewUrl.value = "";
+    return;
+  }
+
+  showCameraPreview.value = true;
+}
+
+async function refreshCameraPreview() {
+  const previewLoaded = await updateCameraPreview();
+  if (!previewLoaded) {
+    showCameraPreview.value = false;
     cameraPreviewUrl.value = "";
   }
 }
@@ -170,10 +213,9 @@ async function loadAppConfig(): Promise<boolean> {
     tempCaptureMode.value = captureMode.value;
     
     // 设置保存路径
-    const targetPath = config.save_path || await desktopDir();
+    const targetPath = config.save_path ?? await desktopDir();
     savePath.value = targetPath;
     tempSavePath.value = targetPath;
-    await invoke("set_save_path", { path: targetPath });
     
     applyTheme();
     return true;
@@ -184,7 +226,6 @@ async function loadAppConfig(): Promise<boolean> {
     const desktop = await desktopDir();
     savePath.value = desktop;
     tempSavePath.value = desktop;
-    await invoke("set_save_path", { path: desktop });
     
     applyTheme();
     return false;
@@ -193,12 +234,15 @@ async function loadAppConfig(): Promise<boolean> {
 
 // 启动/停止监控
 async function toggleMonitoring() {
-  if (monitoringStatus.value === "空闲") {
-    try {
+  try {
+    if (monitoringStatus.value === "空闲") {
       await invoke("start_monitoring_command", { cameraId: selectedCameraId.value });
-    } catch (error) {
-      console.error("Failed to start monitoring:", error);
+    } else {
+      await invoke("stop_monitoring_command");
     }
+  } catch (error) {
+    console.error("Failed to toggle monitoring:", error);
+    alert(`监控操作失败: ${error}`);
   }
 }
 
@@ -631,9 +675,14 @@ function cleanupCustomResize() {
 
 onMounted(async () => {
   // 获取摄像头列表
-  cameraList.value = await invoke<CameraInfo[]>("get_camera_list");
-  if (cameraList.value.length > 0) {
-    selectedCameraId.value = cameraList.value[0].id;
+  try {
+    cameraList.value = await invoke<CameraInfo[]>("get_camera_list");
+    if (cameraList.value.length > 0) {
+      selectedCameraId.value = cameraList.value[0].id;
+    }
+  } catch (error) {
+    console.error("Failed to get camera list:", error);
+    cameraList.value = [];
   }
 
   // 加载配置或使用默认设置
@@ -660,12 +709,13 @@ onMounted(async () => {
   }
 
   // 监听状态变化
-  listen<MonitoringStatus | '锁定中'>("monitoring_status_changed", (event) => {
+  const unlistenMonitoringStatus = await listen<MonitoringStatus | '锁定中'>("monitoring_status_changed", (event) => {
     monitoringStatus.value = event.payload;
   });
+  eventUnlisteners.push(unlistenMonitoringStatus);
 
   // 监听日志事件
-  listen<LogEntry>("log_entry", (event) => {
+  const unlistenLogEntry = await listen<LogEntry>("log_entry", (event) => {
     if (showDebugLogs.value) {
       logEntries.value.push(event.payload);
       // 限制日志条数，避免内存溢出
@@ -681,6 +731,7 @@ onMounted(async () => {
       });
     }
   });
+  eventUnlisteners.push(unlistenLogEntry);
 
   // 获取日志设置
   try {
@@ -750,7 +801,7 @@ onMounted(async () => {
     }
     
     try {
-      captureMode.value = await invoke<'Photo' | 'Video'>("get_capture_mode");
+      captureMode.value = await invoke<'Video'>("get_capture_mode");
       tempCaptureMode.value = captureMode.value;
     } catch (error) {
       console.error("Failed to get capture mode setting:", error);
@@ -766,6 +817,10 @@ onMounted(async () => {
 // 组件卸载时清理事件监听器
 onUnmounted(() => {
   cleanupCustomResize();
+  document.removeEventListener('keydown', handleEscapeKey);
+  for (const unlisten of eventUnlisteners.splice(0)) {
+    unlisten();
+  }
 });
 </script>
 
@@ -802,9 +857,7 @@ onUnmounted(() => {
           <div class="action-buttons">
             <button
               @click="toggleMonitoring"
-              :disabled="monitoringStatus === '准备中'"
               class="main-action-button"
-              :class="{ 'disabled': monitoringStatus === '准备中' }"
             >
               <span class="button-icon">{{ getStatusIcon(monitoringStatus) }}</span>
               <span class="button-text">{{ getStatusText(monitoringStatus, currentShortcut) }}</span>
@@ -987,7 +1040,7 @@ onUnmounted(() => {
                   <div class="preview-controls">
                     <button
                       @click="toggleCameraPreview"
-                      :disabled="cameraPermissionStatus !== '已授权'"
+                      :disabled="isCheckingPermission"
                       class="preview-toggle-button"
                       :class="{ 'active': showCameraPreview }"
                     >
@@ -996,7 +1049,7 @@ onUnmounted(() => {
                   </div>
                   <div v-if="showCameraPreview && cameraPreviewUrl" class="camera-preview">
                     <img :src="cameraPreviewUrl" alt="相机预览" class="preview-image" />
-                    <button @click="updateCameraPreview" class="refresh-preview-button" title="刷新预览">
+                    <button @click="refreshCameraPreview" class="refresh-preview-button" title="刷新预览">
                       🔄
                     </button>
                   </div>

@@ -7,16 +7,14 @@ export interface CameraInfo {
 
 export interface AppConfig {
   shortcut_key: string;
-  save_path: string;
+  save_path: string | null;
   show_debug_logs: boolean;
   save_logs_to_file: boolean;
   dark_mode: boolean;
   exit_on_lock: boolean;
-  enable_screen_lock: boolean;
   enable_notifications: boolean;
   post_trigger_action: 'CaptureAndLock' | 'CaptureOnly' | 'ScreenRecording';
-  default_camera_id?: number;
-  // 新增拍摄时间设置
+  default_camera_id: number | null;
   capture_delay_seconds: number;
   capture_mode: 'Video';
 }

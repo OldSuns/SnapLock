@@ -1,15 +1,16 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod camera;
-mod monitoring;
-mod state;
 mod app_setup;
+mod camera;
+mod config;
 mod constants;
 mod handlers;
 mod logger;
-mod config;
+mod monitoring;
+mod process_utils;
 mod recorder;
+mod state;
 
 #[cfg(target_os = "windows")]
 mod session_monitor;
@@ -17,7 +18,7 @@ mod session_monitor;
 use crate::state::{AppState, MonitoringFlags};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::{Manager};
+use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
 fn main() {
@@ -35,18 +36,18 @@ fn main() {
         .manage(last_toggle_time)
         .setup(|app| {
             let handle = app.handle().clone();
-            
+
             // 初始化日志系统
             if let Err(e) = logger::init_logger(handle.clone()) {
                 eprintln!("Failed to initialize logger: {}", e);
             }
-            
+
             // 加载配置
             let config = config::AppConfig::load();
             let state = app.state::<AppState>();
             config.apply_to_state(&state);
             log::info!("应用配置已加载");
-            
+
             // 初始化会话监控器 (仅Windows)
             #[cfg(target_os = "windows")]
             {
@@ -61,7 +62,7 @@ fn main() {
                     }
                 }
             }
-            
+
             // 请求通知权限
             #[cfg(target_os = "windows")]
             {
@@ -69,7 +70,7 @@ fn main() {
                     eprintln!("Failed to request notification permission: {}", e);
                 }
             }
-            
+
             // Setup tray icon
             let _tray = app_setup::setup_system_tray(&handle)?;
 
@@ -85,18 +86,26 @@ fn main() {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    window.hide().unwrap();
+                    if let Err(error) = window.hide() {
+                        log::error!("隐藏窗口失败: {}", error);
+                    }
                 }
                 tauri::WindowEvent::Destroyed => {
                     // 应用退出时，确保停止所有后台进程
                     log::info!("窗口已销毁，正在停止后台进程...");
                     crate::recorder::stop_screen_recording();
+                    tauri::async_runtime::spawn(async {
+                        if let Err(error) = crate::camera::stop_video_recording().await {
+                            log::error!("停止摄像头录像失败: {}", error);
+                        }
+                    });
                 }
                 _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
             handlers::start_monitoring_command,
+            handlers::stop_monitoring_command,
             camera::get_camera_list,
             camera::check_camera_permission,
             camera::get_camera_preview,
