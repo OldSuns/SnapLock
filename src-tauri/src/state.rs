@@ -2,6 +2,8 @@ use crate::config::{CaptureMode, PostTriggerAction};
 use std::sync::Mutex;
 use tokio::task::JoinHandle;
 
+pub type MonitoringLifecycleLock = tokio::sync::Mutex<()>;
+
 /// Represents the monitoring status of the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitoringState {
@@ -230,6 +232,8 @@ pub struct MonitoringFlags {
     pub(crate) last_activity_time: std::sync::atomic::AtomicU64,
     /// Whether the global input listener is ready to be used.
     pub(crate) listener_ready: std::sync::atomic::AtomicBool,
+    /// Generation counter used to cancel stale trigger flows.
+    pub(crate) action_generation: std::sync::atomic::AtomicU64,
     /// Latest listener startup/runtime error, if any.
     pub(crate) listener_error: Mutex<Option<String>>,
     /// Handle to the long-lived input listener thread.
@@ -246,6 +250,7 @@ impl MonitoringFlags {
             last_shortcut_time: std::sync::atomic::AtomicU64::new(0),
             last_activity_time: std::sync::atomic::AtomicU64::new(0),
             listener_ready: std::sync::atomic::AtomicBool::new(false),
+            action_generation: std::sync::atomic::AtomicU64::new(0),
             listener_error: Mutex::new(None),
             listener_handle: Mutex::new(None),
             idle_check_handle: Mutex::new(None),
@@ -295,6 +300,21 @@ impl MonitoringFlags {
     pub fn listener_ready(&self) -> bool {
         self.listener_ready
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn current_action_generation(&self) -> u64 {
+        self.action_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn invalidate_action_generation(&self) -> u64 {
+        self.action_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .saturating_add(1)
+    }
+
+    pub fn is_action_generation_current(&self, generation: u64) -> bool {
+        self.current_action_generation() == generation
     }
 
     pub fn set_listener_ready(&self, value: bool) {
@@ -373,6 +393,7 @@ impl MonitoringFlags {
         log::info!("停止监控状态...");
         self.stop_idle_check_thread();
         self.set_monitoring_active(false);
+        self.invalidate_action_generation();
         log::info!("监控状态已重置为非激活");
     }
 
@@ -394,6 +415,7 @@ impl MonitoringFlags {
                 listener_ready
             );
             self.set_monitoring_active(false);
+            self.invalidate_action_generation();
         }
 
         is_healthy
@@ -446,5 +468,17 @@ mod tests {
         let flags = MonitoringFlags::new();
         assert!(!flags.start_monitoring_atomic());
         assert!(!flags.monitoring_active());
+    }
+
+    #[test]
+    fn invalidating_action_generation_cancels_stale_flow() {
+        let flags = MonitoringFlags::new();
+        let initial_generation = flags.current_action_generation();
+
+        let next_generation = flags.invalidate_action_generation();
+
+        assert_eq!(initial_generation + 1, next_generation);
+        assert!(!flags.is_action_generation_current(initial_generation));
+        assert!(flags.is_action_generation_current(next_generation));
     }
 }

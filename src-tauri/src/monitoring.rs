@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
     constants::EVENT_IGNORE_WINDOW_MS,
     state::{AppState, MonitoringFlags, MonitoringState},
 };
-use rdev::{Event, EventType, Key, listen};
+use rdev::{listen, Event};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{task, time::sleep};
 
@@ -15,6 +15,16 @@ fn emit_monitoring_status(app_handle: &AppHandle, status: &str) {
     if let Err(error) = app_handle.emit("monitoring_status_changed", status) {
         log::error!("无法发送监控状态事件 '{}': {}", status, error);
     }
+}
+
+fn should_ignore_input_event(shortcut_in_progress: bool, within_shortcut_window: bool) -> bool {
+    shortcut_in_progress || within_shortcut_window
+}
+
+fn is_action_still_current(app_handle: &AppHandle, action_generation: u64) -> bool {
+    let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
+    monitoring_flags.is_action_generation_current(action_generation)
+        && app_handle.state::<AppState>().status() == MonitoringState::Triggered
 }
 
 pub fn lock_screen() {
@@ -76,8 +86,9 @@ pub fn ensure_listener_started(
             let _ = tx.send(error_message.clone());
             listener_flags.set_listener_ready(false);
             listener_flags.set_listener_error(Some(error_message));
-            listener_flags.set_monitoring_active(false);
+            listener_flags.stop_monitoring_thread();
             crate::recorder::stop_screen_recording();
+
             if let Ok(runtime) = tokio::runtime::Runtime::new() {
                 runtime.block_on(async {
                     if let Err(error) = camera::stop_video_recording().await {
@@ -122,7 +133,6 @@ pub fn ensure_listener_started(
     }
 }
 
-/// Starts the idle check loop for screen recording.
 pub fn start_idle_check_loop(
     app_handle: AppHandle,
     monitoring_flags: Arc<MonitoringFlags>,
@@ -147,17 +157,25 @@ pub fn start_idle_check_loop(
                 .unwrap_or_default()
                 .as_millis() as u64;
             let idle_time_ms = current_time.saturating_sub(last_activity);
-            let is_recording = crate::recorder::FFMPEG_PROCESS.lock().unwrap().is_some();
+            let is_recording = crate::recorder::is_screen_recording_running();
 
             if idle_time_ms > 20_000 && is_recording {
                 log::info!("超过20秒无操作，暂停屏幕录制...");
                 crate::recorder::stop_screen_recording();
             } else if idle_time_ms <= 20_000 && !is_recording {
+                if let Some(remaining_ms) = crate::recorder::screen_recording_retry_remaining_ms() {
+                    log::debug!("屏幕录制处于冷却中，剩余 {} ms", remaining_ms);
+                    continue;
+                }
+
                 log::info!("检测到用户活动，恢复屏幕录制...");
                 let app_handle_clone = app_handle.clone();
                 tokio::spawn(async move {
-                    if let Err(error) =
-                        crate::recorder::start_screen_recording(app_handle_clone).await
+                    if let Err(error) = crate::recorder::start_screen_recording_with_options(
+                        app_handle_clone,
+                        false,
+                    )
+                    .await
                     {
                         log::error!("无法恢复屏幕录制: {}", error);
                     }
@@ -172,20 +190,18 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
         return;
     }
 
-    if monitoring_flags.shortcut_in_progress() {
-        return;
-    }
-
     let current_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
-    if current_time.saturating_sub(monitoring_flags.last_shortcut_time()) < EVENT_IGNORE_WINDOW_MS {
-        return;
-    }
+    let within_shortcut_window =
+        current_time.saturating_sub(monitoring_flags.last_shortcut_time()) < EVENT_IGNORE_WINDOW_MS;
 
-    if handle_key_press(&event, app_handle) {
+    if should_ignore_input_event(
+        monitoring_flags.shortcut_in_progress(),
+        within_shortcut_window,
+    ) {
         return;
     }
 
@@ -205,13 +221,14 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
         return;
     }
 
+    let action_generation = monitoring_flags.current_action_generation();
     monitoring_flags.set_monitoring_active(false);
 
     let app_handle_clone = app_handle.clone();
     std::thread::spawn(move || match tokio::runtime::Runtime::new() {
         Ok(runtime) => {
             runtime.block_on(async move {
-                trigger_lockdown(app_handle_clone).await;
+                trigger_lockdown(app_handle_clone, action_generation).await;
             });
         }
         Err(error) => {
@@ -221,90 +238,29 @@ fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<Monitor
 }
 
 fn trigger_screen_recording_activity(app_handle: AppHandle) {
-    let is_recording = crate::recorder::FFMPEG_PROCESS.lock().unwrap().is_some();
-    if is_recording {
+    if crate::recorder::is_screen_recording_running() {
+        return;
+    }
+
+    if let Some(remaining_ms) = crate::recorder::screen_recording_retry_remaining_ms() {
+        log::debug!("屏幕录制启动冷却中，剩余 {} ms", remaining_ms);
         return;
     }
 
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = crate::recorder::start_screen_recording(app_handle).await {
+        if let Err(error) =
+            crate::recorder::start_screen_recording_with_options(app_handle, false).await
+        {
             log::error!("启动屏幕录制失败: {}", error);
         }
     });
 }
 
-fn handle_key_press(event: &Event, app_handle: &AppHandle) -> bool {
-    match &event.event_type {
-        EventType::KeyPress(key) | EventType::KeyRelease(key) => {
-            let state = app_handle.state::<AppState>();
-            let current_shortcut = state.shortcut_key();
-            let parts: Vec<&str> = current_shortcut.split('+').collect();
-            if parts.is_empty() {
-                return false;
-            }
-
-            let main_key = parts.last().unwrap_or(&"");
-
-            let should_ignore = match key {
-                Key::Alt | Key::AltGr => parts.contains(&"Alt"),
-                Key::ControlLeft | Key::ControlRight => parts.contains(&"Ctrl"),
-                Key::ShiftLeft | Key::ShiftRight => parts.contains(&"Shift"),
-                Key::MetaLeft | Key::MetaRight => parts.contains(&"Meta"),
-                _ => {
-                    let key_name = format!("{:?}", key);
-                    key_name.contains(main_key)
-                        || (*main_key == "L" && matches!(key, Key::KeyL))
-                        || (*main_key == "D" && matches!(key, Key::KeyD))
-                        || (*main_key == "S" && matches!(key, Key::KeyS))
-                        || (*main_key == "A" && matches!(key, Key::KeyA))
-                        || (*main_key == "Q" && matches!(key, Key::KeyQ))
-                        || (*main_key == "W" && matches!(key, Key::KeyW))
-                        || (*main_key == "E" && matches!(key, Key::KeyE))
-                        || (*main_key == "R" && matches!(key, Key::KeyR))
-                        || (*main_key == "T" && matches!(key, Key::KeyT))
-                        || (*main_key == "Y" && matches!(key, Key::KeyY))
-                        || (*main_key == "U" && matches!(key, Key::KeyU))
-                        || (*main_key == "I" && matches!(key, Key::KeyI))
-                        || (*main_key == "O" && matches!(key, Key::KeyO))
-                        || (*main_key == "P" && matches!(key, Key::KeyP))
-                        || (*main_key == "F" && matches!(key, Key::KeyF))
-                        || (*main_key == "G" && matches!(key, Key::KeyG))
-                        || (*main_key == "H" && matches!(key, Key::KeyH))
-                        || (*main_key == "J" && matches!(key, Key::KeyJ))
-                        || (*main_key == "K" && matches!(key, Key::KeyK))
-                        || (*main_key == "Z" && matches!(key, Key::KeyZ))
-                        || (*main_key == "X" && matches!(key, Key::KeyX))
-                        || (*main_key == "C" && matches!(key, Key::KeyC))
-                        || (*main_key == "V" && matches!(key, Key::KeyV))
-                        || (*main_key == "B" && matches!(key, Key::KeyB))
-                        || (*main_key == "N" && matches!(key, Key::KeyN))
-                        || (*main_key == "M" && matches!(key, Key::KeyM))
-                }
-            };
-
-            if should_ignore {
-                log::debug!(
-                    "过滤当前快捷键相关按键: {:?} (快捷键: {})",
-                    key,
-                    current_shortcut
-                );
-            }
-
-            should_ignore
-        }
-        _ => false,
-    }
-}
-
-async fn trigger_lockdown(app_handle: AppHandle) {
+async fn trigger_lockdown(app_handle: AppHandle, action_generation: u64) {
     log::info!("=== 开始执行锁定流程 ===");
 
-    let state_check = app_handle.state::<AppState>();
-    if state_check.status() != MonitoringState::Triggered {
-        log::warn!(
-            "trigger_lockdown 被调用，但当前状态不是 Triggered ({:?})，取消执行",
-            state_check.status()
-        );
+    if !is_action_still_current(&app_handle, action_generation) {
+        log::info!("锁定流程已失效，取消执行");
         return;
     }
 
@@ -347,34 +303,40 @@ async fn trigger_lockdown(app_handle: AppHandle) {
     );
 
     if capture_delay_seconds > 0 {
-        await_delayed_capture(
+        if !await_delayed_capture(
             app_handle.clone(),
             camera_id,
             save_path.clone(),
             capture_delay_seconds,
             capture_mode,
+            action_generation,
         )
-        .await;
-    } else {
-        execute_capture_and_lock(
-            app_handle.clone(),
-            camera_id,
-            save_path.clone(),
-            post_trigger_action.clone(),
-        )
-        .await;
+        .await
+        {
+            return;
+        }
+    } else if !execute_capture_and_lock(
+        app_handle.clone(),
+        camera_id,
+        save_path.clone(),
+        post_trigger_action.clone(),
+        action_generation,
+    )
+    .await
+    {
+        return;
     }
 
-    if notifications_enabled {
+    if notifications_enabled && is_action_still_current(&app_handle, action_generation) {
         send_security_notification(&app_handle);
     }
 
-    if screen_lock_enabled {
+    if screen_lock_enabled && is_action_still_current(&app_handle, action_generation) {
         lock_screen();
         sleep(Duration::from_millis(1_000)).await;
     }
 
-    if exit_on_lock_enabled {
+    if exit_on_lock_enabled && is_action_still_current(&app_handle, action_generation) {
         crate::recorder::stop_screen_recording();
         if let Err(error) = camera::stop_video_recording().await {
             log::error!("退出前停止摄像头录像失败: {}", error);
@@ -382,7 +344,9 @@ async fn trigger_lockdown(app_handle: AppHandle) {
         std::process::exit(0);
     }
 
-    if post_trigger_action == crate::config::PostTriggerAction::CaptureOnly {
+    if post_trigger_action == crate::config::PostTriggerAction::CaptureOnly
+        && is_action_still_current(&app_handle, action_generation)
+    {
         let state = app_handle.state::<AppState>();
         if state.set_status(MonitoringState::Idle).is_ok() {
             emit_monitoring_status(&app_handle, "空闲");
@@ -394,6 +358,11 @@ async fn trigger_lockdown(app_handle: AppHandle) {
 
 fn send_security_notification(app_handle: &AppHandle) {
     use tauri_plugin_notification::NotificationExt;
+
+    let state = app_handle.state::<AppState>();
+    if !state.enable_notifications() {
+        return;
+    }
 
     match app_handle
         .notification()
@@ -414,18 +383,25 @@ async fn await_delayed_capture(
     save_path: Option<String>,
     delay_seconds: u32,
     capture_mode: crate::config::CaptureMode,
-) {
+    action_generation: u64,
+) -> bool {
     log::info!(
         "开始延迟拍摄，模式: {:?}, 延迟: {}秒",
         capture_mode,
         delay_seconds
     );
 
+    if !is_action_still_current(&app_handle, action_generation) {
+        log::info!("延迟拍摄前流程已取消");
+        return false;
+    }
+
     if let Err(error) =
-        camera::start_video_recording(app_handle, camera_id, save_path, Some(delay_seconds)).await
+        camera::start_video_recording(app_handle.clone(), camera_id, save_path, Some(delay_seconds))
+            .await
     {
         log::error!("启动录像失败: {}", error);
-        return;
+        return is_action_still_current(&app_handle, action_generation);
     }
 
     sleep(Duration::from_secs((delay_seconds + 2).into())).await;
@@ -434,7 +410,13 @@ async fn await_delayed_capture(
         log::error!("清理录像进程失败: {}", error);
     }
 
+    if !is_action_still_current(&app_handle, action_generation) {
+        log::info!("延迟拍摄完成后流程已取消");
+        return false;
+    }
+
     sleep(Duration::from_millis(2_000)).await;
+    is_action_still_current(&app_handle, action_generation)
 }
 
 async fn execute_capture_and_lock(
@@ -442,18 +424,43 @@ async fn execute_capture_and_lock(
     camera_id: u32,
     save_path: Option<String>,
     post_trigger_action: crate::config::PostTriggerAction,
-) {
+    action_generation: u64,
+) -> bool {
+    if !is_action_still_current(&app_handle, action_generation) {
+        log::info!("执行触发动作前流程已取消");
+        return false;
+    }
+
     if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
-        let app_handle_clone = app_handle.clone();
-        if let Err(error) = crate::recorder::start_screen_recording(app_handle_clone).await {
+        if let Err(error) = crate::recorder::start_screen_recording(app_handle).await {
             log::error!("启动屏幕录制失败: {}", error);
-        } else if let Err(error) = camera::take_photo(camera_id, save_path).await {
-            log::error!("拍照失败: {}", error);
         }
-        return;
+        return true;
     }
 
     if let Err(error) = camera::take_photo(camera_id, save_path).await {
         log::error!("拍照失败: {}", error);
+    }
+
+    is_action_still_current(&app_handle, action_generation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_ignore_input_event;
+
+    #[test]
+    fn ignores_event_while_shortcut_is_in_progress() {
+        assert!(should_ignore_input_event(true, false));
+    }
+
+    #[test]
+    fn ignores_event_inside_shortcut_window() {
+        assert!(should_ignore_input_event(false, true));
+    }
+
+    #[test]
+    fn does_not_ignore_normal_input() {
+        assert!(!should_ignore_input_event(false, false));
     }
 }

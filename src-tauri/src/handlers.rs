@@ -1,15 +1,14 @@
-// snaplock/src-tauri/src/handlers.rs
-
 use crate::{
     camera,
     constants::{PREPARATION_DELAY, SHORTCUT_DEBOUNCE_TIME, SHORTCUT_FLAG_CLEAR_DELAY},
     monitoring,
-    state::{AppState, MonitoringFlags, MonitoringState},
+    state::{AppState, MonitoringFlags, MonitoringLifecycleLock, MonitoringState},
 };
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
+use tokio::sync::OwnedMutexGuard;
 
 fn emit_monitoring_status(app_handle: &AppHandle, status: &str) {
     if let Err(error) = app_handle.emit("monitoring_status_changed", status) {
@@ -36,9 +35,13 @@ fn show_notification(app_handle: &AppHandle, body: &str) {
 
 fn reset_to_idle_state(state: &AppState, app_handle: &AppHandle, reason: &str) {
     log::info!("重置为空闲状态: {}", reason);
+    let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
+    monitoring_flags.stop_monitoring_thread();
+
     if let Err(error) = state.set_status(MonitoringState::Idle) {
         log::error!("无法重置状态为空闲: {} ({})", reason, error);
     }
+
     emit_monitoring_status(app_handle, "空闲");
 }
 
@@ -48,6 +51,15 @@ fn schedule_shortcut_flag_clear(monitoring_flags: Arc<MonitoringFlags>) {
         monitoring_flags.set_shortcut_in_progress(false);
         log::debug!("清除快捷键处理标志");
     });
+}
+
+async fn lock_monitoring_lifecycle(app_handle: &AppHandle) -> OwnedMutexGuard<()> {
+    app_handle
+        .state::<Arc<MonitoringLifecycleLock>>()
+        .inner()
+        .clone()
+        .lock_owned()
+        .await
 }
 
 fn begin_shortcut_toggle(
@@ -85,10 +97,31 @@ async fn cleanup_capture_processes() {
     }
 }
 
-async fn start_monitoring_internal(app_handle: &AppHandle, camera_id: u32) -> Result<(), String> {
-    let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
+fn persist_state_change<Apply, Rollback>(
+    app_handle: &AppHandle,
+    apply: Apply,
+    rollback: Rollback,
+) -> Result<(), String>
+where
+    Apply: FnOnce(&AppState),
+    Rollback: FnOnce(&AppState),
+{
+    let state = app_handle.state::<AppState>();
+    apply(&state);
 
-    if app_handle.state::<AppState>().status() != MonitoringState::Idle {
+    if let Err(error) = crate::config::save_config(app_handle.clone()) {
+        rollback(&state);
+        return Err(format!("保存配置失败: {}", error));
+    }
+
+    Ok(())
+}
+
+async fn start_monitoring_locked(app_handle: &AppHandle, camera_id: u32) -> Result<(), String> {
+    let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
+    let state = app_handle.state::<AppState>();
+
+    if state.status() != MonitoringState::Idle {
         log::info!("监控已处于非空闲状态，忽略重复启动");
         return Ok(());
     }
@@ -105,7 +138,6 @@ async fn start_monitoring_internal(app_handle: &AppHandle, camera_id: u32) -> Re
             .unwrap_or_else(|| "输入监听器不可用".to_string()));
     }
 
-    let state = app_handle.state::<AppState>();
     state.set_camera_id(camera_id);
     if state.default_camera_id().is_none() {
         log::debug!(
@@ -122,6 +154,7 @@ async fn start_monitoring_internal(app_handle: &AppHandle, camera_id: u32) -> Re
     let app_handle_clone = app_handle.clone();
     tokio::spawn(async move {
         tokio::time::sleep(PREPARATION_DELAY).await;
+        let _lifecycle_guard = lock_monitoring_lifecycle(&app_handle_clone).await;
 
         let state = app_handle_clone.state::<AppState>();
         let monitoring_flags = app_handle_clone
@@ -174,26 +207,24 @@ async fn start_monitoring_internal(app_handle: &AppHandle, camera_id: u32) -> Re
     Ok(())
 }
 
-async fn stop_monitoring_internal(app_handle: &AppHandle) -> Result<(), String> {
+async fn stop_monitoring_locked(app_handle: &AppHandle) -> Result<(), String> {
     let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
-    let current_status = app_handle.state::<AppState>().status();
+    let state = app_handle.state::<AppState>();
+    let current_status = state.status();
     let was_active = matches!(
         current_status,
         MonitoringState::Active | MonitoringState::Triggered
     );
 
+    monitoring_flags.stop_monitoring_thread();
+    cleanup_capture_processes().await;
+
     if current_status == MonitoringState::Idle {
-        monitoring_flags.stop_monitoring_thread();
-        cleanup_capture_processes().await;
         emit_monitoring_status(app_handle, "空闲");
         log::info!("监控已处于空闲状态，执行了幂等清理");
         return Ok(());
     }
 
-    monitoring_flags.stop_monitoring_thread();
-    cleanup_capture_processes().await;
-
-    let state = app_handle.state::<AppState>();
     state
         .set_status(MonitoringState::Idle)
         .map_err(|error| format!("无法重置为空闲状态: {}", error))?;
@@ -207,13 +238,8 @@ async fn stop_monitoring_internal(app_handle: &AppHandle) -> Result<(), String> 
     Ok(())
 }
 
-/// Toggles the monitoring state from the global shortcut.
 pub async fn toggle_monitoring(app_handle: &AppHandle) {
     let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
-    let current_status = app_handle.state::<AppState>().status();
-    let current_camera_id = app_handle.state::<AppState>().camera_id();
-
-    log::info!("切换监控状态请求，当前状态: {:?}", current_status);
 
     if !monitoring_flags.health_check() {
         log::warn!("健康检查失败，已尝试修复状态");
@@ -226,21 +252,26 @@ pub async fn toggle_monitoring(app_handle: &AppHandle) {
         return;
     }
 
+    let _lifecycle_guard = lock_monitoring_lifecycle(app_handle).await;
+    let state = app_handle.state::<AppState>();
+    let current_status = state.status();
+    let current_camera_id = state.camera_id();
+
+    log::info!("切换监控状态请求，当前状态: {:?}", current_status);
+
     let result = match current_status {
-        MonitoringState::Idle => start_monitoring_internal(app_handle, current_camera_id).await,
+        MonitoringState::Idle => start_monitoring_locked(app_handle, current_camera_id).await,
         MonitoringState::Preparing | MonitoringState::Active | MonitoringState::Triggered => {
-            stop_monitoring_internal(app_handle).await
+            stop_monitoring_locked(app_handle).await
         }
     };
 
     if let Err(error) = result {
         log::error!("快捷键切换监控失败: {}", error);
-        let state = app_handle.state::<AppState>();
         reset_to_idle_state(&state, app_handle, "快捷键切换失败");
     }
 }
 
-/// Sets the selected camera ID in the application state
 #[tauri::command]
 pub fn set_camera_id(app_handle: tauri::AppHandle, camera_id: u32) -> Result<(), String> {
     camera::ensure_camera_available(camera_id)?;
@@ -250,26 +281,24 @@ pub fn set_camera_id(app_handle: tauri::AppHandle, camera_id: u32) -> Result<(),
     Ok(())
 }
 
-/// Starts monitoring explicitly from the frontend.
 #[tauri::command]
 pub async fn start_monitoring_command(app_handle: AppHandle, camera_id: u32) -> Result<(), String> {
-    start_monitoring_internal(&app_handle, camera_id).await
+    let _lifecycle_guard = lock_monitoring_lifecycle(&app_handle).await;
+    start_monitoring_locked(&app_handle, camera_id).await
 }
 
-/// Stops monitoring explicitly from the frontend.
 #[tauri::command]
 pub async fn stop_monitoring_command(app_handle: AppHandle) -> Result<(), String> {
-    stop_monitoring_internal(&app_handle).await
+    let _lifecycle_guard = lock_monitoring_lifecycle(&app_handle).await;
+    stop_monitoring_locked(&app_handle).await
 }
 
-/// Gets the current shortcut key
 #[tauri::command]
 pub fn get_shortcut_key(app_handle: tauri::AppHandle) -> Result<String, String> {
     let state = app_handle.state::<AppState>();
     Ok(state.shortcut_key())
 }
 
-/// Sets a new shortcut key
 #[tauri::command]
 pub async fn set_shortcut_key(
     app_handle: tauri::AppHandle,
@@ -281,17 +310,30 @@ pub async fn set_shortcut_key(
 
     let state = app_handle.state::<AppState>();
     let old_shortcut = state.shortcut_key();
+
+    crate::app_setup::update_global_shortcut(&app_handle, &old_shortcut, &shortcut)
+        .await
+        .map_err(|error| format!("快捷键注册失败: {}", error))?;
+
     state.set_shortcut_key(shortcut.clone());
 
-    if let Err(error) =
-        crate::app_setup::update_global_shortcut(&app_handle, &old_shortcut, &shortcut).await
-    {
-        state.set_shortcut_key(old_shortcut);
-        return Err(format!("快捷键注册失败: {}", error));
-    }
-
     if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
+        log::error!("保存快捷键配置失败，尝试回滚: {}", error);
+
+        match crate::app_setup::update_global_shortcut(&app_handle, &shortcut, &old_shortcut).await
+        {
+            Ok(_) => {
+                state.set_shortcut_key(old_shortcut);
+                return Err(format!("保存配置失败，已回滚快捷键: {}", error));
+            }
+            Err(rollback_error) => {
+                state.set_shortcut_key(shortcut.clone());
+                return Err(format!(
+                    "保存配置失败，且回滚快捷键失败: {}; {}",
+                    error, rollback_error
+                ));
+            }
+        }
     }
 
     log::info!("快捷键已更新为: {}", shortcut);
@@ -341,11 +383,13 @@ pub fn get_show_debug_logs(app_handle: tauri::AppHandle) -> Result<bool, String>
 #[tauri::command]
 pub fn set_show_debug_logs(app_handle: tauri::AppHandle, show: bool) -> Result<(), String> {
     let state = app_handle.state::<AppState>();
-    state.set_show_debug_logs(show);
+    let old_show = state.show_debug_logs();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_show_debug_logs(show),
+        |state| state.set_show_debug_logs(old_show),
+    )?;
 
     log::info!("调试日志显示设置已更新为: {}", show);
     Ok(())
@@ -360,18 +404,25 @@ pub fn get_save_logs_to_file(app_handle: tauri::AppHandle) -> Result<bool, Strin
 #[tauri::command]
 pub fn set_save_logs_to_file(app_handle: tauri::AppHandle, save: bool) -> Result<(), String> {
     let state = app_handle.state::<AppState>();
-    state.set_save_logs_to_file(save);
+    let old_save = state.save_logs_to_file();
+    let old_path = state.get_effective_save_path();
+    let new_path = state.get_effective_save_path();
 
-    if save {
-        let save_path = state.get_effective_save_path();
-        if let Some(logger) = crate::logger::get_logger() {
-            logger.set_log_file_path(Some(save_path));
-        }
-    }
-
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| {
+            state.set_save_logs_to_file(save);
+            if let Some(logger) = crate::logger::get_logger() {
+                logger.set_log_file_path(Some(new_path.clone()));
+            }
+        },
+        |state| {
+            state.set_save_logs_to_file(old_save);
+            if let Some(logger) = crate::logger::get_logger() {
+                logger.set_log_file_path(Some(old_path.clone()));
+            }
+        },
+    )?;
 
     log::info!("日志保存到文件设置已更新为: {}", save);
     Ok(())
@@ -392,11 +443,13 @@ pub fn get_exit_on_lock(app_handle: tauri::AppHandle) -> Result<bool, String> {
 #[tauri::command]
 pub fn set_exit_on_lock(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let state = app_handle.state::<AppState>();
-    state.set_exit_on_lock(enabled);
+    let old_enabled = state.exit_on_lock();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_exit_on_lock(enabled),
+        |state| state.set_exit_on_lock(old_enabled),
+    )?;
 
     log::info!("锁定时退出设置已更新为: {}", enabled);
     Ok(())
@@ -404,18 +457,20 @@ pub fn set_exit_on_lock(app_handle: tauri::AppHandle, enabled: bool) -> Result<(
 
 #[tauri::command]
 pub fn get_dark_mode(app_handle: tauri::AppHandle) -> Result<bool, String> {
-    let state = app_handle.state::<crate::state::AppState>();
+    let state = app_handle.state::<AppState>();
     Ok(state.dark_mode())
 }
 
 #[tauri::command]
 pub fn set_dark_mode(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_dark_mode(enabled);
+    let state = app_handle.state::<AppState>();
+    let old_enabled = state.dark_mode();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_dark_mode(enabled),
+        |state| state.set_dark_mode(old_enabled),
+    )?;
 
     log::info!("暗色模式设置已更新为: {}", enabled);
     Ok(())
@@ -423,18 +478,20 @@ pub fn set_dark_mode(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), 
 
 #[tauri::command]
 pub fn get_enable_notifications(app_handle: tauri::AppHandle) -> Result<bool, String> {
-    let state = app_handle.state::<crate::state::AppState>();
+    let state = app_handle.state::<AppState>();
     Ok(state.enable_notifications())
 }
 
 #[tauri::command]
 pub fn set_enable_notifications(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_enable_notifications(enabled);
+    let state = app_handle.state::<AppState>();
+    let old_enabled = state.enable_notifications();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_enable_notifications(enabled),
+        |state| state.set_enable_notifications(old_enabled),
+    )?;
 
     log::info!("系统通知启用设置已更新为: {}", enabled);
     Ok(())
@@ -444,7 +501,7 @@ pub fn set_enable_notifications(app_handle: tauri::AppHandle, enabled: bool) -> 
 pub fn get_post_trigger_action(
     app_handle: tauri::AppHandle,
 ) -> Result<crate::config::PostTriggerAction, String> {
-    let state = app_handle.state::<crate::state::AppState>();
+    let state = app_handle.state::<AppState>();
     Ok(state.post_trigger_action())
 }
 
@@ -453,12 +510,15 @@ pub fn set_post_trigger_action(
     app_handle: tauri::AppHandle,
     action: crate::config::PostTriggerAction,
 ) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_post_trigger_action(action.clone());
+    let state = app_handle.state::<AppState>();
+    let old_action = state.post_trigger_action();
+    let new_action = action.clone();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_post_trigger_action(new_action.clone()),
+        |state| state.set_post_trigger_action(old_action.clone()),
+    )?;
 
     log::info!("触发后动作设置已更新为: {:?}", action);
     Ok(())
@@ -466,7 +526,7 @@ pub fn set_post_trigger_action(
 
 #[tauri::command]
 pub fn get_default_camera_id(app_handle: tauri::AppHandle) -> Result<Option<u32>, String> {
-    let state = app_handle.state::<crate::state::AppState>();
+    let state = app_handle.state::<AppState>();
     Ok(state.default_camera_id())
 }
 
@@ -479,16 +539,23 @@ pub fn set_default_camera_id(
         camera::ensure_camera_available(id)?;
     }
 
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_default_camera_id(camera_id);
+    let state = app_handle.state::<AppState>();
+    let old_default_camera_id = state.default_camera_id();
+    let old_camera_id = state.camera_id();
 
-    if let Some(id) = camera_id {
-        state.set_camera_id(id);
-    }
-
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| {
+            state.set_default_camera_id(camera_id);
+            if let Some(id) = camera_id {
+                state.set_camera_id(id);
+            }
+        },
+        |state| {
+            state.set_default_camera_id(old_default_camera_id);
+            state.set_camera_id(old_camera_id);
+        },
+    )?;
 
     log::info!("默认摄像头ID设置已更新为: {:?}", camera_id);
     Ok(())
@@ -496,7 +563,7 @@ pub fn set_default_camera_id(
 
 #[tauri::command]
 pub fn get_capture_delay_seconds(app_handle: tauri::AppHandle) -> Result<u32, String> {
-    let state = app_handle.state::<crate::state::AppState>();
+    let state = app_handle.state::<AppState>();
     Ok(state.capture_delay_seconds())
 }
 
@@ -506,12 +573,14 @@ pub fn set_capture_delay_seconds(app_handle: tauri::AppHandle, delay: u32) -> Re
         return Err("拍摄延迟必须在 0 到 60 秒之间".to_string());
     }
 
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_capture_delay_seconds(delay);
+    let state = app_handle.state::<AppState>();
+    let old_delay = state.capture_delay_seconds();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_capture_delay_seconds(delay),
+        |state| state.set_capture_delay_seconds(old_delay),
+    )?;
 
     log::info!("拍摄延迟时间设置已更新为: {}秒", delay);
     Ok(())
@@ -521,7 +590,7 @@ pub fn set_capture_delay_seconds(app_handle: tauri::AppHandle, delay: u32) -> Re
 pub fn get_capture_mode(
     app_handle: tauri::AppHandle,
 ) -> Result<crate::config::CaptureMode, String> {
-    let state = app_handle.state::<crate::state::AppState>();
+    let state = app_handle.state::<AppState>();
     Ok(state.capture_mode())
 }
 
@@ -530,12 +599,15 @@ pub fn set_capture_mode(
     app_handle: tauri::AppHandle,
     mode: crate::config::CaptureMode,
 ) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    state.set_capture_mode(mode.clone());
+    let state = app_handle.state::<AppState>();
+    let old_mode = state.capture_mode();
+    let new_mode = mode.clone();
 
-    if let Err(error) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", error);
-    }
+    persist_state_change(
+        &app_handle,
+        |state| state.set_capture_mode(new_mode.clone()),
+        |state| state.set_capture_mode(old_mode.clone()),
+    )?;
 
     log::info!("拍摄模式设置已更新为: {:?}", mode);
     Ok(())

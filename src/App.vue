@@ -72,6 +72,9 @@ const tempSaveLogsToFile = ref<boolean>(false);
 const logEntries = ref<LogEntry[]>([]);
 const logPanelExpanded = ref<boolean>(false);
 const eventUnlisteners: UnlistenFn[] = [];
+let cameraPreviewRequestToken = 0;
+
+type PreviewLoadResult = 'loaded' | 'failed' | 'stale';
 
 // ===== 计算属性 =====
 const statusClass = computed(() => {
@@ -97,6 +100,7 @@ watch(selectedCameraId, async (newId, oldId) => {
   }
 
   if (newId !== oldId) {
+    cameraPreviewRequestToken += 1;
     cameraPermissionStatus.value = "未检查";
     cameraPreviewUrl.value = "";
 
@@ -107,8 +111,8 @@ watch(selectedCameraId, async (newId, oldId) => {
         return;
       }
 
-      const previewLoaded = await updateCameraPreview();
-      if (!previewLoaded) {
+      const previewResult = await updateCameraPreview();
+      if (previewResult === 'failed') {
         showCameraPreview.value = false;
       }
     }
@@ -124,45 +128,67 @@ async function checkCameraPermission() {
     return false;
   }
   
+  const cameraId = selectedCameraId.value;
   isCheckingPermission.value = true;
   try {
     const hasPermission = await invoke<boolean>("check_camera_permission", {
-      cameraId: selectedCameraId.value
+      cameraId
     });
+
+    if (cameraId !== selectedCameraId.value) {
+      return false;
+    }
+
     cameraPermissionStatus.value = hasPermission ? "已授权" : "被拒绝";
     return hasPermission;
   } catch (error) {
     console.error("检查相机权限失败:", error);
-    cameraPermissionStatus.value = "被拒绝";
+    if (cameraId === selectedCameraId.value) {
+      cameraPermissionStatus.value = "被拒绝";
+    }
     return false;
   } finally {
-    isCheckingPermission.value = false;
+    if (cameraId === selectedCameraId.value) {
+      isCheckingPermission.value = false;
+    }
   }
 }
 
 // 更新相机预览
-async function updateCameraPreview() {
+async function updateCameraPreview(): Promise<PreviewLoadResult> {
   if (selectedCameraId.value === null || selectedCameraId.value === undefined) {
     cameraPreviewUrl.value = "";
-    return false;
+    return 'failed';
   }
   
+  const cameraId = selectedCameraId.value;
+  const requestToken = ++cameraPreviewRequestToken;
+
   try {
     const previewData = await invoke<string>("get_camera_preview", {
-      cameraId: selectedCameraId.value
+      cameraId
     });
+
+    if (requestToken !== cameraPreviewRequestToken || cameraId !== selectedCameraId.value) {
+      return 'stale';
+    }
+
     cameraPreviewUrl.value = previewData;
-    return true;
+    return 'loaded';
   } catch (error) {
     console.error("获取相机预览失败:", error);
-    cameraPreviewUrl.value = "";
-    return false;
+    if (requestToken === cameraPreviewRequestToken && cameraId === selectedCameraId.value) {
+      cameraPreviewUrl.value = "";
+      return 'failed';
+    }
+    return 'stale';
   }
 }
 
 // 切换相机预览显示
 async function toggleCameraPreview() {
   if (showCameraPreview.value) {
+    cameraPreviewRequestToken += 1;
     showCameraPreview.value = false;
     cameraPreviewUrl.value = "";
     return;
@@ -175,10 +201,14 @@ async function toggleCameraPreview() {
     return;
   }
 
-  const previewLoaded = await updateCameraPreview();
-  if (!previewLoaded) {
+  const previewResult = await updateCameraPreview();
+  if (previewResult === 'failed') {
     showCameraPreview.value = false;
     cameraPreviewUrl.value = "";
+    return;
+  }
+
+  if (previewResult === 'stale') {
     return;
   }
 
@@ -186,11 +216,20 @@ async function toggleCameraPreview() {
 }
 
 async function refreshCameraPreview() {
-  const previewLoaded = await updateCameraPreview();
-  if (!previewLoaded) {
+  const previewResult = await updateCameraPreview();
+  if (previewResult === 'failed') {
     showCameraPreview.value = false;
     cameraPreviewUrl.value = "";
   }
+}
+
+function normalizeCaptureDelayValue(value: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return captureDelaySeconds.value;
+  }
+
+  return Math.min(60, Math.max(0, Math.trunc(parsed)));
 }
 
 // 加载应用配置的统一函数
@@ -474,17 +513,16 @@ async function saveLogSettings() {
 async function saveDarkModeSettings() {
   try {
     if (tempIsDarkMode.value !== isDarkMode.value) {
-      isDarkMode.value = tempIsDarkMode.value;
+      const nextDarkMode = tempIsDarkMode.value;
+      await invoke("set_dark_mode", { enabled: nextDarkMode });
+      isDarkMode.value = nextDarkMode;
       applyTheme();
-      
-      // 保存暗色模式设置到后端状态和配置
-      await invoke("set_dark_mode", { enabled: isDarkMode.value });
       console.log("暗色模式设置已更新为:", isDarkMode.value);
     }
   } catch (error) {
     console.error("Failed to save dark mode settings:", error);
-    // 恢复到之前的值
     tempIsDarkMode.value = isDarkMode.value;
+    applyTheme();
   }
 }
 
@@ -548,13 +586,16 @@ async function savePostTriggerActionSettings() {
 async function saveDefaultCameraSettings() {
   try {
     if (tempDefaultCameraId.value !== defaultCameraId.value) {
+      const nextDefaultCameraId = tempDefaultCameraId.value;
       await invoke("set_default_camera_id", { cameraId: tempDefaultCameraId.value });
-      defaultCameraId.value = tempDefaultCameraId.value;
+      defaultCameraId.value = nextDefaultCameraId;
+      if (nextDefaultCameraId !== null) {
+        selectedCameraId.value = nextDefaultCameraId;
+      }
       console.log("默认摄像头设置已更新为:", defaultCameraId.value);
     }
   } catch (error) {
     console.error("Failed to save default camera settings:", error);
-    // 恢复到之前的值
     tempDefaultCameraId.value = defaultCameraId.value;
   }
 }
@@ -562,14 +603,17 @@ async function saveDefaultCameraSettings() {
 // 保存拍摄延迟时间设置
 async function saveCaptureDelaySettings() {
   try {
-    if (tempCaptureDelaySeconds.value !== captureDelaySeconds.value) {
-      await invoke("set_capture_delay_seconds", { delay: tempCaptureDelaySeconds.value });
-      captureDelaySeconds.value = tempCaptureDelaySeconds.value;
+    const normalizedDelay = normalizeCaptureDelayValue(tempCaptureDelaySeconds.value);
+    tempCaptureDelaySeconds.value = normalizedDelay;
+
+    if (normalizedDelay !== captureDelaySeconds.value) {
+      await invoke("set_capture_delay_seconds", { delay: normalizedDelay });
+      captureDelaySeconds.value = normalizedDelay;
+      tempCaptureDelaySeconds.value = normalizedDelay;
       console.log("拍摄延迟时间设置已更新为:", captureDelaySeconds.value);
     }
   } catch (error) {
     console.error("Failed to save capture delay settings:", error);
-    // 恢复到之前的值
     tempCaptureDelaySeconds.value = captureDelaySeconds.value;
   }
 }
@@ -1140,7 +1184,7 @@ onUnmounted(() => {
                 <span class="delay-unit">持续</span>
                 <input
                   type="number"
-                  v-model="tempCaptureDelaySeconds"
+                  v-model.number="tempCaptureDelaySeconds"
                   @change="saveCaptureDelaySettings"
                   min="0"
                   max="60"

@@ -88,11 +88,46 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    /// 获取配置文件路径（保存在系统临时目录）
+    fn legacy_config_path() -> PathBuf {
+        std::env::temp_dir().join("snaplock_config.json")
+    }
+
+    /// 获取配置文件路径（保存在用户配置目录）
     fn get_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let temp_dir = std::env::temp_dir();
-        let config_path = temp_dir.join("snaplock_config.json");
-        Ok(config_path)
+        let base_dir = dirs::config_dir().unwrap_or_else(std::env::temp_dir);
+        let config_dir = base_dir.join("SnapLock");
+        fs::create_dir_all(&config_dir)?;
+        Ok(config_dir.join("snaplock_config.json"))
+    }
+
+    fn migrate_legacy_config_if_needed(
+        config_path: &PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let legacy_path = Self::legacy_config_path();
+
+        if config_path.exists() || !legacy_path.exists() || *config_path == legacy_path {
+            return Ok(());
+        }
+
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::copy(&legacy_path, config_path)?;
+        if let Err(error) = fs::remove_file(&legacy_path) {
+            log::warn!(
+                "旧配置文件迁移后删除失败 ({}): {}",
+                legacy_path.display(),
+                error
+            );
+        }
+
+        log::info!(
+            "已将旧配置从 '{}' 迁移到 '{}'",
+            legacy_path.display(),
+            config_path.display()
+        );
+        Ok(())
     }
 
     fn sanitize(mut self) -> Self {
@@ -100,10 +135,30 @@ impl AppConfig {
         self
     }
 
+    pub fn prepare_for_runtime(mut self) -> (Self, Option<u32>) {
+        self = self.sanitize();
+
+        match crate::camera::resolve_camera_selection(self.default_camera_id) {
+            Ok(selection) => {
+                self.default_camera_id = selection.persisted_default_camera_id;
+                (self, selection.runtime_camera_id)
+            }
+            Err(error) => {
+                log::warn!("运行时校验默认摄像头失败，保留当前配置: {}", error);
+                let runtime_camera_id = self.default_camera_id;
+                (self, runtime_camera_id)
+            }
+        }
+    }
+
     /// 从文件加载配置
     pub fn load() -> Self {
         match Self::get_config_path() {
             Ok(config_path) => {
+                if let Err(error) = Self::migrate_legacy_config_if_needed(&config_path) {
+                    log::warn!("迁移旧配置失败: {}", error);
+                }
+
                 if config_path.exists() {
                     match fs::read_to_string(&config_path) {
                         Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
@@ -159,8 +214,18 @@ impl AppConfig {
         self.capture_mode = state.capture_mode();
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code)]
     /// 将配置应用到应用状态
     pub fn apply_to_state(&self, state: &crate::state::AppState) {
+        self.apply_to_state_with_runtime_camera(state, self.default_camera_id);
+    }
+
+    pub fn apply_to_state_with_runtime_camera(
+        &self,
+        state: &crate::state::AppState,
+        runtime_camera_id: Option<u32>,
+    ) {
         state.set_shortcut_key(self.shortcut_key.clone());
         state.set_save_path(self.save_path.clone());
         state.set_show_debug_logs(self.show_debug_logs);
@@ -171,7 +236,7 @@ impl AppConfig {
         state.set_enable_notifications(self.enable_notifications);
         state.set_default_camera_id(self.default_camera_id);
 
-        if let Some(camera_id) = self.default_camera_id {
+        if let Some(camera_id) = runtime_camera_id {
             state.set_camera_id(camera_id);
         }
 
@@ -211,9 +276,18 @@ pub fn save_config(app_handle: AppHandle) -> Result<(), String> {
 /// 加载配置的命令
 #[tauri::command]
 pub fn load_config(app_handle: AppHandle) -> Result<AppConfig, String> {
-    let config = AppConfig::load();
+    let loaded_config = AppConfig::load();
+    let original_default_camera_id = loaded_config.default_camera_id;
+    let (config, runtime_camera_id) = loaded_config.prepare_for_runtime();
     let state = app_handle.state::<crate::state::AppState>();
-    config.apply_to_state(&state);
+    config.apply_to_state_with_runtime_camera(&state, runtime_camera_id);
+
+    if config.default_camera_id != original_default_camera_id {
+        if let Err(error) = config.save() {
+            log::warn!("保存已修正的默认摄像头配置失败: {}", error);
+        }
+    }
+
     Ok(config)
 }
 
@@ -221,13 +295,35 @@ pub fn load_config(app_handle: AppHandle) -> Result<AppConfig, String> {
 #[tauri::command]
 pub fn save_dark_mode_setting(app_handle: AppHandle, enabled: bool) -> Result<(), String> {
     let state = app_handle.state::<crate::state::AppState>();
+    let previous = state.dark_mode();
     state.set_dark_mode(enabled);
 
-    let mut config = AppConfig::load();
-    config.update_from_state(&state);
-    config.save().map_err(|e| e.to_string())?;
+    if let Err(error) = save_config(app_handle.clone()) {
+        state.set_dark_mode(previous);
+        return Err(format!("保存配置失败: {}", error));
+    }
 
     log::info!("暗色模式设置已保存: {}", enabled);
+    Ok(())
+}
+
+pub fn apply_state_change<A, R>(
+    app_handle: &AppHandle,
+    apply: A,
+    rollback: R,
+) -> Result<(), String>
+where
+    A: FnOnce(&crate::state::AppState),
+    R: FnOnce(&crate::state::AppState),
+{
+    let state = app_handle.state::<crate::state::AppState>();
+    apply(&state);
+
+    if let Err(error) = save_config(app_handle.clone()) {
+        rollback(&state);
+        return Err(format!("保存配置失败: {}", error));
+    }
+
     Ok(())
 }
 

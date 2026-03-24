@@ -26,23 +26,94 @@ lazy_static::lazy_static! {
     pub static ref VIDEO_PROCESSES: Mutex<HashMap<u32, Child>> = Mutex::new(HashMap::new());
 }
 
-/// A Tauri command that retrieves a list of available cameras with their actual indices.
-#[command]
-pub async fn get_camera_list() -> Result<Vec<CameraListItem>, String> {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CameraSelection {
+    pub persisted_default_camera_id: Option<u32>,
+    pub runtime_camera_id: Option<u32>,
+}
+
+fn camera_numeric_id(index: &CameraIndex, fallback_id: u32) -> u32 {
+    match index {
+        CameraIndex::Index(id) => *id,
+        CameraIndex::String(value) => value.parse::<u32>().unwrap_or(fallback_id),
+    }
+}
+
+fn enumerate_camera_info() -> Result<Vec<(u32, CameraInfo)>, String> {
     query(ApiBackend::Auto)
+        .map_err(|error| format!("Failed to query cameras: {}", error))
         .map(|cameras| {
-            let camera_list: Vec<CameraListItem> = cameras
+            cameras
                 .into_iter()
                 .enumerate()
                 .map(|(array_index, info)| {
-                    let actual_id = match info.index() {
-                        CameraIndex::Index(id) => *id,
-                        CameraIndex::String(s) => s.parse::<u32>().unwrap_or(array_index as u32),
-                    };
-                    CameraListItem {
-                        id: actual_id,
-                        name: info.human_name().to_string(),
-                    }
+                    let resolved_id = camera_numeric_id(info.index(), array_index as u32);
+                    (resolved_id, info)
+                })
+                .collect()
+        })
+}
+
+fn resolve_camera_info(camera_id: u32) -> Result<CameraInfo, String> {
+    let cameras = enumerate_camera_info()?;
+
+    if cameras.is_empty() {
+        return Err("No cameras available on the system".to_string());
+    }
+
+    for (resolved_id, info) in cameras.iter() {
+        if *resolved_id == camera_id {
+            return Ok(info.clone());
+        }
+    }
+
+    let available_ids: Vec<u32> = cameras.into_iter().map(|(id, _)| id).collect();
+    Err(format!(
+        "Camera ID {} not found. Available camera IDs: {:?}",
+        camera_id, available_ids
+    ))
+}
+
+fn prune_finished_video_processes(processes: &mut HashMap<u32, Child>) {
+    let mut finished_camera_ids = Vec::new();
+
+    for (camera_id, child) in processes.iter_mut() {
+        match child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) => {
+                log::warn!(
+                    "摄像头 {} 的 ffmpeg 录像进程已退出，状态: {:?}",
+                    camera_id,
+                    status
+                );
+                finished_camera_ids.push(*camera_id);
+            }
+            Err(error) => {
+                log::error!(
+                    "检查摄像头 {} 的 ffmpeg 录像进程状态失败: {}",
+                    camera_id,
+                    error
+                );
+                finished_camera_ids.push(*camera_id);
+            }
+        }
+    }
+
+    for camera_id in finished_camera_ids {
+        processes.remove(&camera_id);
+    }
+}
+
+/// A Tauri command that retrieves a list of available cameras with their actual indices.
+#[command]
+pub async fn get_camera_list() -> Result<Vec<CameraListItem>, String> {
+    enumerate_camera_info()
+        .map(|cameras| {
+            let camera_list: Vec<CameraListItem> = cameras
+                .iter()
+                .map(|(camera_id, info)| CameraListItem {
+                    id: *camera_id,
+                    name: info.human_name().to_string(),
                 })
                 .collect();
 
@@ -53,51 +124,46 @@ pub async fn get_camera_list() -> Result<Vec<CameraListItem>, String> {
             );
             camera_list
         })
-        .map_err(|e| {
-            eprintln!("Camera enumeration failed: {}", e);
-            format!("Failed to get camera list: {}", e)
+        .map_err(|error| {
+            eprintln!("Camera enumeration failed: {}", error);
+            format!("Failed to get camera list: {}", error)
         })
 }
 
 /// Validates if the given camera ID is available and returns the corresponding CameraInfo
 fn validate_camera_id(camera_id: u32) -> Result<CameraInfo, String> {
-    let cameras = query(ApiBackend::Auto)
-        .map_err(|e| format!("Failed to query cameras for validation: {}", e))?;
-
-    if cameras.is_empty() {
-        return Err("No cameras available on the system".to_string());
-    }
-
-    // 查找具有指定ID的摄像头
-    for camera_info in cameras.iter() {
-        let info_id = match camera_info.index() {
-            CameraIndex::Index(id) => *id,
-            CameraIndex::String(s) => s.parse::<u32>().unwrap_or(u32::MAX),
-        };
-
-        if info_id == camera_id {
-            return Ok(camera_info.clone());
-        }
-    }
-
-    // 如果没有找到指定ID的摄像头，列出所有可用的ID
-    let available_ids: Vec<u32> = cameras
-        .iter()
-        .map(|info| match info.index() {
-            CameraIndex::Index(id) => *id,
-            CameraIndex::String(s) => s.parse::<u32>().unwrap_or(0),
-        })
-        .collect();
-
-    Err(format!(
-        "Camera ID {} not found. Available camera IDs: {:?}",
-        camera_id, available_ids
-    ))
+    resolve_camera_info(camera_id)
 }
 
 /// Public validation helper for callers that only need availability checks.
 pub fn ensure_camera_available(camera_id: u32) -> Result<(), String> {
     validate_camera_id(camera_id).map(|_| ())
+}
+
+pub fn resolve_camera_selection(preferred: Option<u32>) -> Result<CameraSelection, String> {
+    let cameras = enumerate_camera_info()?;
+    if cameras.is_empty() {
+        return Ok(CameraSelection::default());
+    }
+
+    if let Some(preferred_id) = preferred {
+        if cameras.iter().any(|(resolved_id, _)| *resolved_id == preferred_id) {
+            return Ok(CameraSelection {
+                persisted_default_camera_id: Some(preferred_id),
+                runtime_camera_id: Some(preferred_id),
+            });
+        }
+
+        log::warn!(
+            "默认摄像头 {} 当前不可用，回退到第一个可用摄像头",
+            preferred_id
+        );
+    }
+
+    Ok(CameraSelection {
+        persisted_default_camera_id: None,
+        runtime_camera_id: Some(cameras[0].0),
+    })
 }
 
 /// Ensures camera stream is properly closed, even if an error occurs
@@ -132,13 +198,12 @@ impl Drop for CameraGuard {
 
 /// 通用的相机初始化函数
 fn init_camera(camera_id: u32) -> Result<Camera, String> {
-    validate_camera_id(camera_id)?;
+    let camera_info = validate_camera_id(camera_id)?;
 
-    let index = CameraIndex::Index(camera_id);
     let requested =
         RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
 
-    Camera::new(index, requested)
+    Camera::new(camera_info.index().clone(), requested)
         .map_err(|e| format!("Failed to initialize camera ID {}: {}", camera_id, e))
 }
 
@@ -241,11 +306,29 @@ use crate::state::AppState;
 #[command]
 pub fn set_save_path(path: String, app_handle: tauri::AppHandle) -> Result<(), String> {
     let state = app_handle.state::<AppState>();
-    state.set_save_path(Some(path));
+    let previous_path = state.save_path();
+    let previous_effective_path = state.get_effective_save_path();
+    let next_path = path.clone();
 
-    if let Err(e) = crate::config::save_config(app_handle.clone()) {
-        log::warn!("保存配置失败: {}", e);
-    }
+    crate::config::apply_state_change(
+        &app_handle,
+        move |state| {
+            state.set_save_path(Some(next_path.clone()));
+            if state.save_logs_to_file() {
+                if let Some(logger) = crate::logger::get_logger() {
+                    logger.set_log_file_path(Some(next_path.clone()));
+                }
+            }
+        },
+        move |state| {
+            state.set_save_path(previous_path.clone());
+            if state.save_logs_to_file() {
+                if let Some(logger) = crate::logger::get_logger() {
+                    logger.set_log_file_path(Some(previous_effective_path.clone()));
+                }
+            }
+        },
+    )?;
 
     Ok(())
 }
@@ -331,6 +414,14 @@ pub async fn start_video_recording(
     tokio::task::spawn_blocking(move || {
         validate_camera_id(camera_id)?;
 
+        {
+            let mut processes = VIDEO_PROCESSES.lock().unwrap();
+            prune_finished_video_processes(&mut processes);
+            if processes.contains_key(&camera_id) {
+                return Err(format!("Camera {} is already recording", camera_id));
+            }
+        }
+
         let base_path = get_save_path(save_path)?;
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
         let filename = format!("snaplock_video_{}.mkv", timestamp);
@@ -352,8 +443,21 @@ pub async fn start_video_recording(
         );
 
         match result {
-            Ok(child) => {
+            Ok(mut child) => {
+                if let Err(error) =
+                    crate::process_utils::assign_child_to_kill_on_close_job(&mut child)
+                {
+                    log::error!("无法将摄像头录像进程纳入 Job Object: {}", error);
+                    crate::process_utils::terminate_child_process(&mut child, "camera ffmpeg");
+                    return Err(error);
+                }
+
                 let mut processes = VIDEO_PROCESSES.lock().unwrap();
+                prune_finished_video_processes(&mut processes);
+                if processes.contains_key(&camera_id) {
+                    crate::process_utils::terminate_child_process(&mut child, "camera ffmpeg");
+                    return Err(format!("Camera {} is already recording", camera_id));
+                }
                 processes.insert(camera_id, child);
 
                 println!(
@@ -448,55 +552,22 @@ fn try_simple_recording(
 /// 停止录像
 pub async fn stop_video_recording() -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        let mut processes = VIDEO_PROCESSES.lock().unwrap();
+        let mut processes_guard = VIDEO_PROCESSES.lock().unwrap();
+        prune_finished_video_processes(&mut processes_guard);
 
-        for (camera_id, child) in processes.iter_mut() {
-            println!("Stopping video recording for camera {}", camera_id);
-
-            if let Err(e) = child.kill() {
-                eprintln!(
-                    "Failed to kill ffmpeg process for camera {}: {}",
-                    camera_id, e
-                );
-            }
-
-            let timeout = std::time::Duration::from_secs(3);
-            let start = std::time::Instant::now();
-
-            while start.elapsed() < timeout {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        println!(
-                            "FFmpeg process for camera {} exited with status: {:?}",
-                            camera_id, status
-                        );
-                        break;
-                    }
-                    Ok(None) => {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Error waiting for ffmpeg process for camera {}: {}",
-                            camera_id, e
-                        );
-                        break;
-                    }
-                }
-            }
-
-            if child.try_wait().unwrap_or(None).is_none() {
-                println!("Force killing ffmpeg process for camera {}", camera_id);
-                if let Err(e) = child.kill() {
-                    eprintln!(
-                        "Failed to force kill ffmpeg process for camera {}: {}",
-                        camera_id, e
-                    );
-                }
-            }
+        if processes_guard.is_empty() {
+            println!("No active camera recordings to stop");
+            return Ok(());
         }
 
-        processes.clear();
+        let mut processes = std::mem::take(&mut *processes_guard);
+        drop(processes_guard);
+
+        for (camera_id, mut child) in processes.drain() {
+            println!("Stopping video recording for camera {}", camera_id);
+            crate::process_utils::terminate_child_process(&mut child, "camera ffmpeg");
+        }
+
         println!("All video recordings stopped");
         Ok(())
     })

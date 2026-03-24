@@ -2,104 +2,87 @@ use chrono::Local;
 use std::process::{Child, Command};
 #[cfg(all(windows, not(debug_assertions)))]
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
-// Windows specific imports for Job Objects
-#[cfg(windows)]
-use std::ffi::c_void;
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
-#[cfg(windows)]
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-#[cfg(windows)]
-use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject,
-};
-#[cfg(windows)]
-use windows::Win32::System::Threading::GetCurrentProcess;
-
-// A wrapper to make HANDLE Send + Sync
-#[cfg(windows)]
-struct SafeHandle(HANDLE);
-#[cfg(windows)]
-unsafe impl Send for SafeHandle {}
-#[cfg(windows)]
-unsafe impl Sync for SafeHandle {}
-
-// Global state for the ffmpeg process and the Job Object
 lazy_static::lazy_static! {
     pub static ref FFMPEG_PROCESS: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
 }
 static SCREEN_RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
-#[cfg(windows)]
-lazy_static::lazy_static! {
-    static ref JOB_HANDLE: Arc<Mutex<Option<SafeHandle>>> = Arc::new(Mutex::new(None));
+static LAST_SCREEN_RECORDING_FAILURE_MS: AtomicU64 = AtomicU64::new(0);
+const SCREEN_RECORDING_RETRY_COOLDOWN_MS: u64 = 5_000;
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
-fn terminate_child_process(child: &mut Child, process_name: &str) {
-    match child.kill() {
-        Ok(_) => {
-            log::info!("已发送终止信号到{}进程", process_name);
-        }
-        Err(e) => {
-            log::error!("无法终止{}进程: {}", process_name, e);
-        }
+fn mark_screen_recording_failure() {
+    LAST_SCREEN_RECORDING_FAILURE_MS.store(now_millis(), Ordering::SeqCst);
+}
+
+fn clear_screen_recording_failure() {
+    LAST_SCREEN_RECORDING_FAILURE_MS.store(0, Ordering::SeqCst);
+}
+
+pub fn screen_recording_retry_remaining_ms() -> Option<u64> {
+    let last_failure = LAST_SCREEN_RECORDING_FAILURE_MS.load(Ordering::SeqCst);
+    if last_failure == 0 {
+        return None;
     }
 
-    if let Err(e) = child.wait() {
-        log::error!("等待{}进程退出失败: {}", process_name, e);
+    let elapsed = now_millis().saturating_sub(last_failure);
+    if elapsed >= SCREEN_RECORDING_RETRY_COOLDOWN_MS {
+        None
+    } else {
+        Some(SCREEN_RECORDING_RETRY_COOLDOWN_MS - elapsed)
     }
 }
 
-#[cfg(windows)]
-/// Ensures the Job Object is created and the main process is assigned to it.
-fn ensure_job_object() -> Result<HANDLE, String> {
-    let mut job_guard = JOB_HANDLE.lock().unwrap();
-    if let Some(handle) = &*job_guard {
-        return Ok(handle.0);
+fn refresh_screen_recording_state(process_guard: &mut Option<Child>) -> bool {
+    let mut should_clear = false;
+    let is_running = match process_guard.as_mut() {
+        Some(child) => match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                log::warn!("ffmpeg 录制进程已退出，状态: {:?}", status);
+                should_clear = true;
+                false
+            }
+            Err(error) => {
+                log::error!("检查 ffmpeg 录制进程状态失败: {}", error);
+                should_clear = true;
+                false
+            }
+        },
+        None => false,
+    };
+
+    if should_clear {
+        *process_guard = None;
     }
 
-    unsafe {
-        let job_handle = CreateJobObjectW(None, None)
-            .map_err(|e| format!("Failed to create Job Object: {}", e))?;
+    is_running
+}
 
-        let mut limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-
-        let info_size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
-        if SetInformationJobObject(
-            job_handle,
-            JobObjectExtendedLimitInformation,
-            &limit_info as *const _ as *const c_void,
-            info_size,
-        )
-        .is_err()
-        {
-            let err = windows::core::Error::from_win32();
-            let _ = CloseHandle(job_handle);
-            return Err(format!("Failed to set Job Object information: {}", err));
-        }
-
-        if AssignProcessToJobObject(job_handle, GetCurrentProcess()).is_err() {
-            let err = windows::core::Error::from_win32();
-            let _ = CloseHandle(job_handle);
-            return Err(format!(
-                "Failed to assign main process to Job Object: {}",
-                err
-            ));
-        }
-
-        *job_guard = Some(SafeHandle(job_handle));
-        Ok(job_handle)
-    }
+pub fn is_screen_recording_running() -> bool {
+    let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
+    refresh_screen_recording_state(&mut process_guard)
 }
 
 /// 启动屏幕录制并拍照
 pub async fn start_screen_recording(app_handle: AppHandle) -> Result<(), String> {
+    start_screen_recording_with_options(app_handle, true).await
+}
+
+pub async fn start_screen_recording_with_options(
+    app_handle: AppHandle,
+    capture_photo: bool,
+) -> Result<(), String> {
     if SCREEN_RECORDING_STARTING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -116,7 +99,14 @@ pub async fn start_screen_recording(app_handle: AppHandle) -> Result<(), String>
     }
     let _start_guard = StartGuard;
 
-    if FFMPEG_PROCESS.lock().unwrap().is_some() {
+    if let Some(remaining_ms) = screen_recording_retry_remaining_ms() {
+        return Err(format!(
+            "屏幕录制启动冷却中，请在 {} ms 后重试",
+            remaining_ms
+        ));
+    }
+
+    if is_screen_recording_running() {
         log::warn!("录制进程已在运行，跳过启动请求");
         return Ok(());
     }
@@ -130,19 +120,17 @@ pub async fn start_screen_recording(app_handle: AppHandle) -> Result<(), String>
         )
     };
 
-    // Take photo first
-    log::info!("开始拍照 (恢复录制)...");
-    if let Err(e) = crate::camera::take_photo(camera_id, save_path).await {
-        log::error!("拍照失败: {}", e);
-        // We don't return here, as recording might still be possible
-    } else {
-        log::info!("拍照完成");
+    if capture_photo {
+        log::info!("开始拍照后启动屏幕录制...");
+        if let Err(error) = crate::camera::take_photo(camera_id, save_path).await {
+            log::error!("拍照失败: {}", error);
+        } else {
+            log::info!("拍照完成");
+        }
     }
 
-    // Now, start the recording process
     let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-
-    if process_guard.is_some() {
+    if refresh_screen_recording_state(&mut process_guard) {
         log::warn!("录制进程已在运行，跳过启动请求");
         return Ok(());
     }
@@ -198,37 +186,22 @@ pub async fn start_screen_recording(app_handle: AppHandle) -> Result<(), String>
     match command.spawn() {
         Ok(mut child) => {
             log::info!("ffmpeg进程已成功启动，PID: {}", child.id());
-
-            #[cfg(windows)]
+            if let Err(error) = crate::process_utils::assign_child_to_kill_on_close_job(&mut child)
             {
-                match ensure_job_object() {
-                    Ok(job_handle) => {
-                        let child_handle = HANDLE(child.as_raw_handle() as *mut c_void);
-                        unsafe {
-                            if AssignProcessToJobObject(job_handle, child_handle).is_err() {
-                                let err = windows::core::Error::from_win32();
-                                log::error!("无法将ffmpeg进程分配给Job Object: {}", err);
-                                terminate_child_process(&mut child, "ffmpeg");
-                                return Err(format!("无法将ffmpeg进程分配给Job Object: {}", err));
-                            } else {
-                                log::info!("ffmpeg进程已成功分配给Job Object");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("无法确保Job Object存在: {}", e);
-                        terminate_child_process(&mut child, "ffmpeg");
-                        return Err(e);
-                    }
-                }
+                log::error!("无法将 ffmpeg 进程纳入 Job Object: {}", error);
+                crate::process_utils::terminate_child_process(&mut child, "ffmpeg");
+                mark_screen_recording_failure();
+                return Err(error);
             }
 
             *process_guard = Some(child);
+            clear_screen_recording_failure();
             Ok(())
         }
-        Err(e) => {
-            let err_msg = format!("启动ffmpeg失败: {}", e);
+        Err(error) => {
+            let err_msg = format!("启动ffmpeg失败: {}", error);
             log::error!("{}", err_msg);
+            mark_screen_recording_failure();
             Err(err_msg)
         }
     }
@@ -237,9 +210,14 @@ pub async fn start_screen_recording(app_handle: AppHandle) -> Result<(), String>
 /// 停止屏幕录制
 pub fn stop_screen_recording() {
     let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
+    if !refresh_screen_recording_state(&mut process_guard) {
+        log::info!("没有正在运行的ffmpeg录制进程");
+        return;
+    }
+
     if let Some(mut child) = process_guard.take() {
         log::info!("正在停止ffmpeg录制进程 (PID: {})...", child.id());
-        terminate_child_process(&mut child, "ffmpeg");
+        crate::process_utils::terminate_child_process(&mut child, "ffmpeg");
     } else {
         log::info!("没有正在运行的ffmpeg录制进程");
     }

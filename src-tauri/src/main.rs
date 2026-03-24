@@ -15,10 +15,9 @@ mod state;
 #[cfg(target_os = "windows")]
 mod session_monitor;
 
-use crate::state::{AppState, MonitoringFlags};
+use crate::state::{AppState, MonitoringFlags, MonitoringLifecycleLock};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
 fn main() {
@@ -26,6 +25,7 @@ fn main() {
 
     let last_toggle_time = Arc::new(Mutex::new(Instant::now()));
     let monitoring_flags = Arc::new(MonitoringFlags::new());
+    let monitoring_lifecycle = Arc::new(MonitoringLifecycleLock::new(()));
 
     let builder = app_setup::setup_tauri_builder();
 
@@ -33,6 +33,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .manage(monitoring_flags)
+        .manage(monitoring_lifecycle)
         .manage(last_toggle_time)
         .setup(|app| {
             let handle = app.handle().clone();
@@ -43,10 +44,11 @@ fn main() {
             }
 
             // 加载配置
-            let config = config::AppConfig::load();
-            let state = app.state::<AppState>();
-            config.apply_to_state(&state);
-            log::info!("应用配置已加载");
+            if let Err(error) = config::load_config(handle.clone()) {
+                log::error!("应用配置加载失败: {}", error);
+            } else {
+                log::info!("应用配置已加载");
+            }
 
             // 初始化会话监控器 (仅Windows)
             #[cfg(target_os = "windows")]

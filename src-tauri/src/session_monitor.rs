@@ -223,6 +223,11 @@ impl SessionMonitor {
     /// 处理系统解锁事件
     async fn handle_system_unlocked(app_handle: &AppHandle) {
         log::info!("处理系统解锁事件");
+        let lifecycle_lock = app_handle
+            .state::<Arc<crate::state::MonitoringLifecycleLock>>()
+            .inner()
+            .clone();
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         let current_status = app_handle.state::<AppState>().status();
 
         log::info!("当前应用状态: {:?}", current_status);
@@ -274,14 +279,16 @@ impl SessionMonitor {
             #[cfg(target_os = "windows")]
             {
                 use tauri_plugin_notification::NotificationExt;
-                if let Err(e) = app_handle
-                    .notification()
-                    .builder()
-                    .title("SnapLock")
-                    .body("系统已解锁，应用状态已重置")
-                    .show()
-                {
-                    log::error!("无法显示解锁通知: {}", e);
+                if app_handle.state::<AppState>().enable_notifications() {
+                    if let Err(e) = app_handle
+                        .notification()
+                        .builder()
+                        .title("SnapLock")
+                        .body("系统已解锁，应用状态已重置")
+                        .show()
+                    {
+                        log::error!("无法显示解锁通知: {}", e);
+                    }
                 }
             }
         }

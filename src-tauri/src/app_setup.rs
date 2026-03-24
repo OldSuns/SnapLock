@@ -217,9 +217,9 @@ pub async fn update_global_shortcut(
 ) -> Result<()> {
     log::info!("更新全局快捷键: {} -> {}", old_shortcut, new_shortcut);
 
-    // Unregister the old shortcut (不用担心失败)
-    if let Err(e) = app_handle.global_shortcut().unregister(old_shortcut) {
-        log::warn!("取消注册旧快捷键失败 (忽略): {}", e);
+    if old_shortcut == new_shortcut {
+        log::info!("新旧快捷键相同，跳过更新");
+        return Ok(());
     }
 
     // 验证新快捷键格式
@@ -256,6 +256,11 @@ pub async fn update_global_shortcut(
         }) {
         Ok(_) => {
             log::info!("✓ 新快捷键注册成功: {}", new_shortcut);
+
+            if let Err(e) = app_handle.global_shortcut().unregister(old_shortcut) {
+                log::warn!("取消注册旧快捷键失败 (忽略): {}", e);
+            }
+
             Ok(())
         }
         Err(e) => {
