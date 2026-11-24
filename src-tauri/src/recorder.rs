@@ -1,7 +1,5 @@
 use chrono::Local;
 use std::process::{Child, Command};
-#[cfg(all(windows, not(debug_assertions)))]
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -174,14 +172,7 @@ pub async fn start_screen_recording_with_options(
         "2000k",
         output_path_str,
     ]);
-    crate::process_utils::configure_background_command(&mut command);
-    #[cfg(all(windows, not(debug_assertions)))]
-    {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-    }
+    crate::process_utils::configure_recording_command(&mut command);
 
     match command.spawn() {
         Ok(mut child) => {
@@ -208,17 +199,24 @@ pub async fn start_screen_recording_with_options(
 }
 
 /// 停止屏幕录制
-pub fn stop_screen_recording() {
-    let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-    if !refresh_screen_recording_state(&mut process_guard) {
-        log::info!("没有正在运行的ffmpeg录制进程");
-        return;
-    }
-
-    if let Some(mut child) = process_guard.take() {
-        log::info!("正在停止ffmpeg录制进程 (PID: {})...", child.id());
-        crate::process_utils::terminate_child_process(&mut child, "ffmpeg");
-    } else {
-        log::info!("没有正在运行的ffmpeg录制进程");
+pub async fn stop_screen_recording() {
+    if let Err(error) = tokio::task::spawn_blocking(|| {
+        let child = {
+            let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
+            if !refresh_screen_recording_state(&mut process_guard) {
+                log::info!("没有正在运行的ffmpeg录制进程");
+                return;
+            }
+            process_guard.take()
+        };
+        // Input callbacks must not wait on the process mutex while FFmpeg finalizes.
+        if let Some(mut child) = child {
+            log::info!("正在停止ffmpeg录制进程 (PID: {})...", child.id());
+            crate::process_utils::terminate_child_process(&mut child, "ffmpeg");
+        }
+    })
+    .await
+    {
+        log::error!("Failed to join screen recording cleanup: {error}");
     }
 }

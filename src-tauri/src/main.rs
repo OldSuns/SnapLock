@@ -8,6 +8,7 @@ mod constants;
 mod handlers;
 mod logger;
 mod monitoring;
+mod monitoring_controller;
 mod process_utils;
 mod recorder;
 mod state;
@@ -15,26 +16,19 @@ mod state;
 #[cfg(target_os = "windows")]
 mod session_monitor;
 
-use crate::state::{AppState, MonitoringFlags, MonitoringLifecycleLock};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use crate::{monitoring_controller::MonitoringController, state::AppState};
+use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
 fn main() {
     let app_state = AppState::new(0);
-
-    let last_toggle_time = Arc::new(Mutex::new(Instant::now()));
-    let monitoring_flags = Arc::new(MonitoringFlags::new());
-    let monitoring_lifecycle = Arc::new(MonitoringLifecycleLock::new(()));
 
     let builder = app_setup::setup_tauri_builder();
 
     builder
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
-        .manage(monitoring_flags)
-        .manage(monitoring_lifecycle)
-        .manage(last_toggle_time)
+        .manage(MonitoringController::new())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -95,11 +89,12 @@ fn main() {
                 tauri::WindowEvent::Destroyed => {
                     // 应用退出时，确保停止所有后台进程
                     log::info!("窗口已销毁，正在停止后台进程...");
-                    crate::recorder::stop_screen_recording();
-                    tauri::async_runtime::spawn(async {
-                        if let Err(error) = crate::camera::stop_video_recording().await {
-                            log::error!("停止摄像头录像失败: {}", error);
-                        }
+                    let handle = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        handle
+                            .state::<MonitoringController>()
+                            .shutdown(&handle)
+                            .await;
                     });
                 }
                 _ => {}

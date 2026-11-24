@@ -89,6 +89,10 @@ SnapLock 采用现代化混合架构构建，结合了 Web 技术的用户界面
 - **日志系统**：完整的日志记录和调试功能，支持文件保存和实时显示
 - **主题支持**：暗色模式支持，提供舒适的视觉体验
 
+监控生命周期统一由 `src-tauri/src/monitoring_controller.rs` 中的 `MonitoringController` 管理。界面、托盘、快捷键、系统解锁和输入监听故障共用状态转换与停止清理逻辑。每轮监控拥有独立的轮次标记；取消后重新启动时，旧准备任务不会提前激活新一轮监控，旧触发任务也不会清理新一轮的录制进程。停止监控会取消准备任务并唤醒仍在等待的延迟触发任务。
+
+摄像头和屏幕录像停止时，会先请求 FFmpeg 正常退出，写完录像文件后再完成清理；超过 5 秒仍未退出时强制终止，并记录警告。异常终止的录像文件可能不完整。
+
 ## SnapLock 入门指南
 SnapLock 设计为即装即用，设置简单：
 
@@ -156,6 +160,14 @@ pnpm tauri build
 
 - `src-tauri/target/release/bundle/nsis/`
 - `src-tauri/target/release/bundle/app/`
+
+### 后端测试
+
+```bash
+cargo test --locked --manifest-path src-tauri/Cargo.toml --bin SnapLock
+```
+
+Windows 上的录像回归测试使用项目自带的 FFmpeg 和生成画面，验证提前停止后的 MKV 时长、完整解码、超时强制终止及重复停止。无需摄像头或桌面输入；测试产物保存在 `D:\Temp\Pi\snaplock-ffmpeg-regression-*`，运行前需确保 `D:\Temp\Pi` 已存在。这些测试不覆盖真实设备采集、系统锁屏和解锁。
 
 如果您有任何建议或发现 Bug，请随时提交 [Issues](https://github.com/OldSuns/snaplock/issues) 或 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
 

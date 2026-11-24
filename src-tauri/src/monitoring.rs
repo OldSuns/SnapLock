@@ -1,30 +1,26 @@
 use std::process::Command;
-use std::sync::{mpsc, Arc};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use crate::{
     camera,
-    constants::EVENT_IGNORE_WINDOW_MS,
-    state::{AppState, MonitoringFlags, MonitoringState},
+    monitoring_controller::MonitoringController,
+    state::{AppState, MonitoringFlags},
 };
-use rdev::{listen, Event};
-use tauri::{AppHandle, Emitter, Manager};
-use tokio::{task, time::sleep};
+use rdev::listen;
+use tauri::{AppHandle, Manager};
 
-fn emit_monitoring_status(app_handle: &AppHandle, status: &str) {
-    if let Err(error) = app_handle.emit("monitoring_status_changed", status) {
-        log::error!("无法发送监控状态事件 '{}': {}", status, error);
-    }
-}
-
-fn should_ignore_input_event(shortcut_in_progress: bool, within_shortcut_window: bool) -> bool {
+pub(crate) fn should_ignore_input_event(
+    shortcut_in_progress: bool,
+    within_shortcut_window: bool,
+) -> bool {
     shortcut_in_progress || within_shortcut_window
 }
 
 fn is_action_still_current(app_handle: &AppHandle, action_generation: u64) -> bool {
-    let monitoring_flags = app_handle.state::<Arc<MonitoringFlags>>().inner().clone();
-    monitoring_flags.is_action_generation_current(action_generation)
-        && app_handle.state::<AppState>().status() == MonitoringState::Triggered
+    app_handle
+        .state::<MonitoringController>()
+        .is_action_current(action_generation)
 }
 
 pub fn lock_screen() {
@@ -76,31 +72,23 @@ pub fn ensure_listener_started(
         log::info!("启动常驻 rdev 事件监听器...");
 
         let callback_handle = listener_app_handle.clone();
-        let callback_flags = listener_flags.clone();
-
         if let Err(error) = listen(move |event| {
-            callback(event, &callback_handle, &callback_flags);
+            callback_handle
+                .state::<MonitoringController>()
+                .handle_input(event, &callback_handle);
         }) {
             let error_message = format!("rdev 事件监听器故障: {:?}", error);
             log::error!("{}", error_message);
             let _ = tx.send(error_message.clone());
             listener_flags.set_listener_ready(false);
             listener_flags.set_listener_error(Some(error_message));
-            listener_flags.stop_monitoring_thread();
-            crate::recorder::stop_screen_recording();
-
-            if let Ok(runtime) = tokio::runtime::Runtime::new() {
-                runtime.block_on(async {
-                    if let Err(error) = camera::stop_video_recording().await {
-                        log::error!("监听器故障后停止摄像头录像失败: {}", error);
-                    }
-                });
-            }
-
-            let state = listener_app_handle.state::<AppState>();
-            if state.set_status(MonitoringState::Idle).is_ok() {
-                emit_monitoring_status(&listener_app_handle, "空闲");
-            }
+            let generation = listener_flags.current_action_generation();
+            tauri::async_runtime::spawn(async move {
+                listener_app_handle
+                    .state::<MonitoringController>()
+                    .listener_failed(&listener_app_handle, generation)
+                    .await;
+            });
         }
 
         log::info!("rdev 事件监听器线程退出");
@@ -133,138 +121,13 @@ pub fn ensure_listener_started(
     }
 }
 
-pub fn start_idle_check_loop(
-    app_handle: AppHandle,
-    monitoring_flags: Arc<MonitoringFlags>,
-) -> task::JoinHandle<()> {
-    log::info!("启动空闲检测循环...");
-    tokio::spawn(async move {
-        loop {
-            sleep(Duration::from_secs(2)).await;
-
-            if !monitoring_flags.monitoring_active() {
-                log::debug!("监控非激活状态，空闲检测循环终止");
-                break;
-            }
-
-            let last_activity = monitoring_flags.last_activity_time();
-            if last_activity == 0 {
-                continue;
-            }
-
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let idle_time_ms = current_time.saturating_sub(last_activity);
-            let is_recording = crate::recorder::is_screen_recording_running();
-
-            if idle_time_ms > 20_000 && is_recording {
-                log::info!("超过20秒无操作，暂停屏幕录制...");
-                crate::recorder::stop_screen_recording();
-            } else if idle_time_ms <= 20_000 && !is_recording {
-                if let Some(remaining_ms) = crate::recorder::screen_recording_retry_remaining_ms() {
-                    log::debug!("屏幕录制处于冷却中，剩余 {} ms", remaining_ms);
-                    continue;
-                }
-
-                log::info!("检测到用户活动，恢复屏幕录制...");
-                let app_handle_clone = app_handle.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = crate::recorder::start_screen_recording_with_options(
-                        app_handle_clone,
-                        false,
-                    )
-                    .await
-                    {
-                        log::error!("无法恢复屏幕录制: {}", error);
-                    }
-                });
-            }
-        }
-    })
-}
-
-fn callback(event: Event, app_handle: &AppHandle, monitoring_flags: &Arc<MonitoringFlags>) {
-    if !monitoring_flags.monitoring_active() {
-        return;
-    }
-
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    let within_shortcut_window =
-        current_time.saturating_sub(monitoring_flags.last_shortcut_time()) < EVENT_IGNORE_WINDOW_MS;
-
-    if should_ignore_input_event(
-        monitoring_flags.shortcut_in_progress(),
-        within_shortcut_window,
-    ) {
-        return;
-    }
-
-    monitoring_flags.set_last_activity_time(current_time);
-
-    let state = app_handle.state::<AppState>();
-    if state.post_trigger_action() == crate::config::PostTriggerAction::ScreenRecording {
-        log::debug!("屏幕录制模式下检测到真实活动");
-        trigger_screen_recording_activity(app_handle.clone());
-        return;
-    }
-
-    log::info!("✓ 触发锁定！事件类型: {:?}", event.event_type);
-
-    if state.set_status(MonitoringState::Triggered).is_err() {
-        log::warn!("状态转换到 Triggered 失败，忽略本次事件");
-        return;
-    }
-
-    let action_generation = monitoring_flags.current_action_generation();
-    monitoring_flags.set_monitoring_active(false);
-
-    let app_handle_clone = app_handle.clone();
-    std::thread::spawn(move || match tokio::runtime::Runtime::new() {
-        Ok(runtime) => {
-            runtime.block_on(async move {
-                trigger_lockdown(app_handle_clone, action_generation).await;
-            });
-        }
-        Err(error) => {
-            log::error!("创建内部运行时失败: {}", error);
-        }
-    });
-}
-
-fn trigger_screen_recording_activity(app_handle: AppHandle) {
-    if crate::recorder::is_screen_recording_running() {
-        return;
-    }
-
-    if let Some(remaining_ms) = crate::recorder::screen_recording_retry_remaining_ms() {
-        log::debug!("屏幕录制启动冷却中，剩余 {} ms", remaining_ms);
-        return;
-    }
-
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            crate::recorder::start_screen_recording_with_options(app_handle, false).await
-        {
-            log::error!("启动屏幕录制失败: {}", error);
-        }
-    });
-}
-
-async fn trigger_lockdown(app_handle: AppHandle, action_generation: u64) {
+pub(crate) async fn trigger_lockdown(app_handle: AppHandle, action_generation: u64) {
     log::info!("=== 开始执行锁定流程 ===");
 
     if !is_action_still_current(&app_handle, action_generation) {
         log::info!("锁定流程已失效，取消执行");
         return;
     }
-
-    emit_monitoring_status(&app_handle, "锁定中");
 
     let (
         camera_id,
@@ -327,30 +190,36 @@ async fn trigger_lockdown(app_handle: AppHandle, action_generation: u64) {
         return;
     }
 
-    if notifications_enabled && is_action_still_current(&app_handle, action_generation) {
-        send_security_notification(&app_handle);
-    }
-
-    if screen_lock_enabled && is_action_still_current(&app_handle, action_generation) {
-        lock_screen();
-        sleep(Duration::from_millis(1_000)).await;
-    }
-
-    if exit_on_lock_enabled && is_action_still_current(&app_handle, action_generation) {
-        crate::recorder::stop_screen_recording();
-        if let Err(error) = camera::stop_video_recording().await {
-            log::error!("退出前停止摄像头录像失败: {}", error);
-        }
-        std::process::exit(0);
-    }
-
-    if post_trigger_action == crate::config::PostTriggerAction::CaptureOnly
-        && is_action_still_current(&app_handle, action_generation)
     {
-        let state = app_handle.state::<AppState>();
-        if state.set_status(MonitoringState::Idle).is_ok() {
-            emit_monitoring_status(&app_handle, "空闲");
+        let controller = app_handle.state::<MonitoringController>();
+        let Some(_guard) = controller.lock_action(action_generation).await else {
+            return;
+        };
+        if notifications_enabled {
+            send_security_notification(&app_handle);
         }
+        if screen_lock_enabled {
+            if let Err(error) = tokio::task::spawn_blocking(lock_screen).await {
+                log::error!("锁屏任务失败: {}", error);
+            }
+        }
+    }
+    let controller = app_handle.state::<MonitoringController>();
+    if screen_lock_enabled
+        && !controller
+            .wait_action_delay(action_generation, Duration::from_millis(1_000))
+            .await
+    {
+        return;
+    }
+    if exit_on_lock_enabled {
+        controller
+            .exit_after_trigger(&app_handle, action_generation)
+            .await;
+    } else if post_trigger_action == crate::config::PostTriggerAction::CaptureOnly {
+        controller
+            .complete_trigger(&app_handle, action_generation)
+            .await;
     }
 
     log::info!("=== 锁定流程执行完成 ===");
@@ -391,32 +260,49 @@ async fn await_delayed_capture(
         delay_seconds
     );
 
-    if !is_action_still_current(&app_handle, action_generation) {
-        log::info!("延迟拍摄前流程已取消");
-        return false;
-    }
-
-    if let Err(error) =
-        camera::start_video_recording(app_handle.clone(), camera_id, save_path, Some(delay_seconds))
-            .await
     {
-        log::error!("启动录像失败: {}", error);
-        return is_action_still_current(&app_handle, action_generation);
+        let controller = app_handle.state::<MonitoringController>();
+        let Some(_guard) = controller.lock_action(action_generation).await else {
+            return false;
+        };
+        if let Err(error) = camera::start_video_recording(
+            app_handle.clone(),
+            camera_id,
+            save_path,
+            Some(delay_seconds),
+        )
+        .await
+        {
+            log::error!("启动录像失败: {}", error);
+            return true;
+        }
     }
 
-    sleep(Duration::from_secs((delay_seconds + 2).into())).await;
-
-    if let Err(error) = camera::stop_video_recording().await {
-        log::error!("清理录像进程失败: {}", error);
-    }
-
-    if !is_action_still_current(&app_handle, action_generation) {
-        log::info!("延迟拍摄完成后流程已取消");
+    let controller = app_handle.state::<MonitoringController>();
+    if !controller
+        .wait_action_delay(
+            action_generation,
+            Duration::from_secs((delay_seconds + 2).into()),
+        )
+        .await
+    {
         return false;
     }
 
-    sleep(Duration::from_millis(2_000)).await;
-    is_action_still_current(&app_handle, action_generation)
+    {
+        let controller = app_handle.state::<MonitoringController>();
+        let Some(_guard) = controller.lock_action(action_generation).await else {
+            log::info!("延迟拍摄已取消，跳过旧流程的进程清理");
+            return false;
+        };
+        if let Err(error) = camera::stop_video_recording().await {
+            log::error!("清理录像进程失败: {}", error);
+        }
+    }
+
+    controller
+        .wait_action_delay(action_generation, Duration::from_millis(2_000))
+        .await
 }
 
 async fn execute_capture_and_lock(
@@ -426,13 +312,13 @@ async fn execute_capture_and_lock(
     post_trigger_action: crate::config::PostTriggerAction,
     action_generation: u64,
 ) -> bool {
-    if !is_action_still_current(&app_handle, action_generation) {
-        log::info!("执行触发动作前流程已取消");
+    let controller = app_handle.state::<MonitoringController>();
+    let Some(_guard) = controller.lock_action(action_generation).await else {
         return false;
-    }
+    };
 
     if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
-        if let Err(error) = crate::recorder::start_screen_recording(app_handle).await {
+        if let Err(error) = crate::recorder::start_screen_recording(app_handle.clone()).await {
             log::error!("启动屏幕录制失败: {}", error);
         }
         return true;

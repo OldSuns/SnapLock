@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, command};
 
@@ -147,7 +147,10 @@ pub fn resolve_camera_selection(preferred: Option<u32>) -> Result<CameraSelectio
     }
 
     if let Some(preferred_id) = preferred {
-        if cameras.iter().any(|(resolved_id, _)| *resolved_id == preferred_id) {
+        if cameras
+            .iter()
+            .any(|(resolved_id, _)| *resolved_id == preferred_id)
+        {
             return Ok(CameraSelection {
                 persisted_default_camera_id: Some(preferred_id),
                 runtime_camera_id: Some(preferred_id),
@@ -526,19 +529,7 @@ fn try_simple_recording(
     }
 
     println!("Trying simple recording command: {:?}", command);
-    crate::process_utils::configure_background_command(&mut command);
-    #[cfg(all(windows, not(debug_assertions)))]
-    {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-    }
-
-    #[cfg(not(all(windows, not(debug_assertions))))]
-    {
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    }
+    crate::process_utils::configure_recording_command(&mut command);
 
     command.spawn().map_err(|e| {
         let cmd_str = format!("{:?}", command);

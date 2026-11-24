@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
@@ -9,7 +9,7 @@ use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
 
-use crate::state::{AppState, MonitoringState};
+use crate::{monitoring_controller::MonitoringController, state::MonitoringState};
 
 /// Windows会话监控器，用于检测系统锁定/解锁状态
 pub struct SessionMonitor {
@@ -206,8 +206,7 @@ impl SessionMonitor {
     async fn handle_system_locked(app_handle: &AppHandle) {
         log::info!("处理系统锁定事件");
 
-        let state = app_handle.state::<AppState>();
-        let current_status = state.status();
+        let current_status = app_handle.state::<MonitoringController>().status();
 
         if !matches!(
             current_status,
@@ -223,87 +222,10 @@ impl SessionMonitor {
     /// 处理系统解锁事件
     async fn handle_system_unlocked(app_handle: &AppHandle) {
         log::info!("处理系统解锁事件");
-        let lifecycle_lock = app_handle
-            .state::<Arc<crate::state::MonitoringLifecycleLock>>()
-            .inner()
-            .clone();
-        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
-        let current_status = app_handle.state::<AppState>().status();
-
-        log::info!("当前应用状态: {:?}", current_status);
-
-        // 停止任何可能在运行的屏幕录制
-        crate::recorder::stop_screen_recording();
-        if let Err(e) = crate::camera::stop_video_recording().await {
-            log::error!("停止摄像头录像失败: {}", e);
-        }
-
-        // 停止监控线程
-        let monitoring_flags = app_handle
-            .state::<Arc<crate::state::MonitoringFlags>>()
-            .inner()
-            .clone();
-        monitoring_flags.stop_monitoring_thread();
-
-        // 智能状态重置：根据当前状态决定如何重置
-        let reset_success = match current_status {
-            MonitoringState::Idle => {
-                log::info!("应用已处于空闲状态，无需重置");
-                true
-            }
-            MonitoringState::Preparing | MonitoringState::Active | MonitoringState::Triggered => {
-                // 这些状态可以正常转换到 Idle
-                let state = app_handle.state::<AppState>();
-                match state.set_status(MonitoringState::Idle) {
-                    Ok(_) => {
-                        log::info!("成功通过正常状态转换重置为空闲");
-                        true
-                    }
-                    Err(e) => {
-                        log::warn!("正常状态转换失败: {}, 执行强制重置", e);
-                        Self::force_reset_to_idle(&state)
-                    }
-                }
-            }
-        };
-
-        if reset_success {
-            // 发送状态更新事件到前端
-            if let Err(e) = app_handle.emit("monitoring_status_changed", "空闲") {
-                log::error!("无法发送状态更新事件: {}", e);
-            } else {
-                log::info!("已发送状态重置事件到前端");
-            }
-
-            // 显示通知
-            #[cfg(target_os = "windows")]
-            {
-                use tauri_plugin_notification::NotificationExt;
-                if app_handle.state::<AppState>().enable_notifications() {
-                    if let Err(e) = app_handle
-                        .notification()
-                        .builder()
-                        .title("SnapLock")
-                        .body("系统已解锁，应用状态已重置")
-                        .show()
-                    {
-                        log::error!("无法显示解锁通知: {}", e);
-                    }
-                }
-            }
-        }
-    }
-
-    /// 强制重置状态为空闲（绕过状态转换验证）
-    fn force_reset_to_idle(state: &AppState) -> bool {
-        if let Ok(mut status_lock) = state.status.lock() {
-            *status_lock = MonitoringState::Idle;
-            log::info!("强制重置状态为空闲成功");
-            true
-        } else {
-            log::error!("无法获取状态锁进行强制重置");
-            false
-        }
+        app_handle
+            .state::<MonitoringController>()
+            .system_unlocked(app_handle)
+            .await;
     }
 }
 

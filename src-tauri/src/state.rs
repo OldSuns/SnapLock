@@ -2,8 +2,6 @@ use crate::config::{CaptureMode, PostTriggerAction};
 use std::sync::Mutex;
 use tokio::task::JoinHandle;
 
-pub type MonitoringLifecycleLock = tokio::sync::Mutex<()>;
-
 /// Represents the monitoring status of the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitoringState {
@@ -38,8 +36,6 @@ impl MonitoringState {
 
 /// Holds the shared state of the Tauri application.
 pub struct AppState {
-    /// The current monitoring status, protected by a Mutex.
-    pub(crate) status: Mutex<MonitoringState>,
     /// The ID of the camera to be used for capturing photos.
     pub(crate) camera_id: Mutex<u32>,
     /// The persisted default camera selection.
@@ -71,7 +67,6 @@ pub struct AppState {
 impl AppState {
     pub fn new(camera_id: u32) -> Self {
         Self {
-            status: Mutex::new(MonitoringState::Idle),
             camera_id: Mutex::new(camera_id),
             default_camera_id: Mutex::new(None),
             save_path: Mutex::new(None),
@@ -85,22 +80,6 @@ impl AppState {
             post_trigger_action: Mutex::new(PostTriggerAction::CaptureAndLock),
             capture_delay_seconds: Mutex::new(0),
             capture_mode: Mutex::new(CaptureMode::Video),
-        }
-    }
-
-    pub fn status(&self) -> MonitoringState {
-        *self.status.lock().unwrap()
-    }
-
-    pub fn set_status(&self, new_status: MonitoringState) -> Result<(), &'static str> {
-        let mut status = self.status.lock().unwrap();
-        let current_status = *status;
-        match current_status.transition_to(new_status) {
-            Ok(state) => {
-                *status = state;
-                Ok(())
-            }
-            Err(e) => Err(e),
         }
     }
 
@@ -395,11 +374,6 @@ impl MonitoringFlags {
         self.set_monitoring_active(false);
         self.invalidate_action_generation();
         log::info!("监控状态已重置为非激活");
-    }
-
-    /// Compatibility helper used by existing monitoring/session code paths.
-    pub fn stop_monitoring_thread(&self) {
-        self.stop_monitoring();
     }
 
     /// 健康检查：验证监控状态与监听器状态的一致性
