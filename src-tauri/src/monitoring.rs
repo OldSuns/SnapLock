@@ -274,6 +274,7 @@ async fn await_delayed_capture(
         .await
         {
             log::error!("启动录像失败: {}", error);
+            controller.report_capture_error(&app_handle, &error);
             return true;
         }
     }
@@ -320,12 +321,14 @@ async fn execute_capture_and_lock(
     if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
         if let Err(error) = crate::recorder::start_screen_recording(app_handle.clone()).await {
             log::error!("启动屏幕录制失败: {}", error);
+            controller.report_capture_error(&app_handle, &error);
         }
         return true;
     }
 
     if let Err(error) = camera::take_photo(camera_id, save_path).await {
         log::error!("拍照失败: {}", error);
+        controller.report_capture_error(&app_handle, &error);
     }
 
     is_action_still_current(&app_handle, action_generation)

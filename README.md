@@ -93,6 +93,10 @@ SnapLock 采用现代化混合架构构建，结合了 Web 技术的用户界面
 
 摄像头和屏幕录像停止时，会先请求 FFmpeg 正常退出，写完录像文件后再完成清理；超过 5 秒仍未退出时强制终止，并记录警告。异常终止的录像文件可能不完整。
 
+Windows 锁定与解锁由当前会话的系统通知驱动，普通窗口切换、托盘菜单和窗口标题不会影响监控状态。屏幕录像可独立使用，无需摄像头；拍照和摄像头录像仍会校验设备及权限。
+
+录像启动需在 10 秒内收到 FFmpeg 首帧进度。初始化失败会显示具体错误；屏幕录像初始化失败或运行中意外退出时，会停止本轮监控并重新显示主窗口。照片采用独占创建，录像禁止覆盖，文件名包含高精度时间和唯一序号，避免快速重复拍摄时覆盖已有文件。
+
 ## SnapLock 入门指南
 SnapLock 设计为即装即用，设置简单：
 
@@ -167,7 +171,7 @@ pnpm tauri build
 cargo test --locked --manifest-path src-tauri/Cargo.toml --bin SnapLock
 ```
 
-Windows 上的录像回归测试使用项目自带的 FFmpeg 和生成画面，验证提前停止后的 MKV 时长、完整解码、超时强制终止及重复停止。无需摄像头或桌面输入；测试产物保存在 `D:\Temp\Pi\snaplock-ffmpeg-regression-*`，运行前需确保 `D:\Temp\Pi` 已存在。这些测试不覆盖真实设备采集、系统锁屏和解锁。
+Windows 上的录像回归测试使用项目自带的 FFmpeg 和生成画面，验证首帧确认、初始化错误、意外退出、文件防覆盖、提前停止后的 MKV 时长、完整解码及超时强制终止。设备校验测试使用无效摄像头 ID，确认屏幕录像可独立启动、摄像头模式仍拒绝无效设备。测试产物保存在 `D:\Temp\Pi\snaplock-*`，运行前需确保 `D:\Temp\Pi` 已存在。会话消息过滤测试验证只有锁定和解锁通知影响状态；这些自动测试不覆盖真实系统锁屏和解锁。
 
 如果您有任何建议或发现 Bug，请随时提交 [Issues](https://github.com/OldSuns/snaplock/issues) 或 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
 

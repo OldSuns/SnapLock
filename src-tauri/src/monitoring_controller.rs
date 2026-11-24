@@ -138,10 +138,11 @@ impl MonitoringController {
             return Ok(());
         }
 
-        camera::ensure_camera_available(camera_id)?;
-        if !camera::check_camera_permission(camera_id).await? {
-            return Err("无法访问选中的摄像头，请检查权限或设备占用".to_string());
-        }
+        validate_capture_device(
+            app_handle.state::<AppState>().post_trigger_action(),
+            camera_id,
+        )
+        .await?;
 
         monitoring::ensure_listener_started(app_handle.clone(), self.session.flags.clone())?;
         if !self.session.flags.listener_ready() {
@@ -354,6 +355,8 @@ impl MonitoringController {
                         .await
                         {
                             log::error!("启动屏幕录制失败: {}", error);
+                            controller.stop_locked(&handle).await;
+                            controller.report_capture_error(&handle, &error);
                         }
                     }
                     return;
@@ -385,7 +388,22 @@ impl MonitoringController {
                     continue;
                 }
                 let idle_ms = Self::now_millis().saturating_sub(last_activity);
-                let recording = crate::recorder::is_screen_recording_running();
+                let recording = match crate::recorder::check_screen_recording() {
+                    Ok(recording) => recording,
+                    Err(error) => {
+                        // This idle task must not abort itself before cleanup completes.
+                        controller
+                            .session
+                            .flags
+                            .idle_check_handle
+                            .lock()
+                            .unwrap()
+                            .take();
+                        controller.stop_locked(&app_handle).await;
+                        controller.report_capture_error(&app_handle, &error);
+                        break;
+                    }
+                };
                 if idle_ms > 20_000 && recording {
                     crate::recorder::stop_screen_recording().await;
                 } else if idle_ms <= 20_000
@@ -399,6 +417,16 @@ impl MonitoringController {
                     .await
                     {
                         log::error!("无法恢复屏幕录制: {}", error);
+                        controller
+                            .session
+                            .flags
+                            .idle_check_handle
+                            .lock()
+                            .unwrap()
+                            .take();
+                        controller.stop_locked(&app_handle).await;
+                        controller.report_capture_error(&app_handle, &error);
+                        break;
                     }
                 }
             }
@@ -442,6 +470,17 @@ impl MonitoringController {
         }
     }
 
+    pub(crate) fn report_capture_error(&self, app_handle: &AppHandle, error: &str) {
+        log::error!("Capture failed: {error}");
+        if let Err(emit_error) = app_handle.emit("monitoring_error", error) {
+            log::error!("Failed to emit capture error: {emit_error}");
+        }
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let _ = window.show();
+        }
+        self.show_notification(app_handle, "录像失败，请查看应用中的错误信息");
+    }
+
     fn show_notification(&self, app_handle: &AppHandle, body: &str) {
         if app_handle.state::<AppState>().enable_notifications() {
             if let Err(error) = app_handle
@@ -464,6 +503,17 @@ impl MonitoringController {
     }
 }
 
+async fn validate_capture_device(action: PostTriggerAction, camera_id: u32) -> Result<(), String> {
+    if action == PostTriggerAction::ScreenRecording {
+        return Ok(());
+    }
+    camera::ensure_camera_available(camera_id)?;
+    if !camera::check_camera_permission(camera_id).await? {
+        return Err("无法访问选中的摄像头，请检查权限或设备占用".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MonitoringController, MonitoringSession};
@@ -471,6 +521,23 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn screen_recording_does_not_require_a_valid_camera() {
+        use super::validate_capture_device;
+        use crate::config::PostTriggerAction;
+        assert!(
+            validate_capture_device(PostTriggerAction::ScreenRecording, u32::MAX)
+                .await
+                .is_ok()
+        );
+        for action in [
+            PostTriggerAction::CaptureOnly,
+            PostTriggerAction::CaptureAndLock,
+        ] {
+            assert!(validate_capture_device(action, u32::MAX).await.is_err());
+        }
+    }
 
     #[test]
     fn cancelled_preparation_cannot_activate_a_restarted_session() {

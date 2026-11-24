@@ -24,6 +24,7 @@ import {
 const cameraList = ref<CameraInfo[]>([]);
 const selectedCameraId = ref<number>(0);
 const monitoringStatus = ref<MonitoringStatus | '锁定中'>("空闲");
+const monitoringError = ref<string>("");
 const savePath = ref<string>("");
 const showSettings = ref<boolean>(false);
 const currentShortcut = ref<string>("Alt+L");
@@ -275,6 +276,7 @@ async function loadAppConfig(): Promise<boolean> {
 async function toggleMonitoring() {
   try {
     if (monitoringStatus.value === "空闲") {
+      monitoringError.value = "";
       await invoke("start_monitoring_command", { cameraId: selectedCameraId.value });
     } else {
       await invoke("stop_monitoring_command");
@@ -755,8 +757,16 @@ onMounted(async () => {
   // 监听状态变化
   const unlistenMonitoringStatus = await listen<MonitoringStatus | '锁定中'>("monitoring_status_changed", (event) => {
     monitoringStatus.value = event.payload;
+    if (event.payload === "准备中") {
+      monitoringError.value = "";
+    }
   });
   eventUnlisteners.push(unlistenMonitoringStatus);
+
+  const unlistenMonitoringError = await listen<string>("monitoring_error", (event) => {
+    monitoringError.value = event.payload;
+  });
+  eventUnlisteners.push(unlistenMonitoringError);
 
   // 监听日志事件
   const unlistenLogEntry = await listen<LogEntry>("log_entry", (event) => {
@@ -882,8 +892,9 @@ onUnmounted(() => {
     </div>
 
     <div class="app-content">
-      <div class="control-card">
-        <div class="control-section">
+      <div class="control-card" :class="{ 'has-capture-error': monitoringError }">
+        <p v-if="monitoringError" class="monitoring-error" role="alert">拍摄失败：{{ monitoringError }}</p>
+        <div v-if="postTriggerAction !== 'ScreenRecording'" class="control-section">
           <label for="cameraSelect" class="control-label">
             <span class="label-icon">🎥</span>
             选择摄像头
@@ -1227,6 +1238,21 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.has-capture-error {
+  overflow-y: auto;
+}
+
+.monitoring-error {
+  color: #b42318;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 5rem;
+  overflow-y: auto;
+  flex-shrink: 0;
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
 /* 强制应用关键样式 - 确保复选框和选择器正确显示 */
 
 /* 选择器样式强制应用 */

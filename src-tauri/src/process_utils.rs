@@ -1,5 +1,7 @@
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const FFMPEG_STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -11,7 +13,6 @@ use std::os::windows::process::CommandExt;
 use std::ffi::c_void;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
-#[cfg(windows)]
 use std::sync::Mutex;
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -50,6 +51,7 @@ pub fn configure_background_command(command: &mut Command) {
 }
 
 /// Keeps FFmpeg's control input available without leaving unread output pipes.
+#[cfg(test)]
 pub fn configure_recording_command(command: &mut Command) {
     configure_background_command(command);
     command.stdin(Stdio::piped()).stdout(Stdio::null());
@@ -57,6 +59,163 @@ pub fn configure_recording_command(command: &mut Command) {
     command.stderr(Stdio::null());
     #[cfg(not(all(windows, not(debug_assertions))))]
     command.stderr(Stdio::inherit());
+}
+
+pub struct RecordingProcess {
+    child: Child,
+    diagnostics: Arc<Mutex<String>>,
+    readers: Vec<JoinHandle<()>>,
+}
+
+impl RecordingProcess {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        let status = self.child.try_wait()?;
+        if status.is_some() {
+            self.finish_readers();
+        }
+        Ok(status)
+    }
+
+    pub fn error_details(&self) -> String {
+        self.diagnostics.lock().unwrap().trim().to_string()
+    }
+
+    pub fn stop(&mut self, process_name: &str) {
+        terminate_child_process(&mut self.child, process_name);
+        self.finish_readers();
+    }
+
+    pub fn assign_to_job(&mut self) -> Result<(), String> {
+        assign_child_to_kill_on_close_job(&mut self.child)
+    }
+
+    fn finish_readers(&mut self) {
+        for reader in self.readers.drain(..) {
+            let _ = reader.join();
+        }
+    }
+}
+
+impl Drop for RecordingProcess {
+    fn drop(&mut self) {
+        self.stop("ffmpeg");
+    }
+}
+
+/// Confirms that FFmpeg encoded a frame, while continuously draining both output pipes.
+pub fn spawn_recording(command: &mut Command) -> Result<RecordingProcess, String> {
+    spawn_recording_with_timeout(command, Duration::from_secs(10))
+}
+
+fn spawn_recording_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<RecordingProcess, String> {
+    configure_background_command(command);
+    command
+        .args([
+            "-n",
+            "-nostats",
+            "-loglevel",
+            "error",
+            "-stats_period",
+            "0.1",
+            "-progress",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to start FFmpeg: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .expect("FFmpeg progress pipe must exist");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("FFmpeg diagnostic pipe must exist");
+    let diagnostics = Arc::new(Mutex::new(String::new()));
+    let diagnostic_buffer = diagnostics.clone();
+    let errors = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = Vec::new();
+        // Bound each read and the retained diagnostics, including malformed long lines.
+        loop {
+            buffer.clear();
+            match reader.fill_buf() {
+                Ok(bytes) if bytes.is_empty() => break,
+                Ok(bytes) => {
+                    buffer.extend_from_slice(bytes);
+                    let length = bytes.len();
+                    reader.consume(length);
+                }
+                Err(_) => break,
+            }
+            let mut text = diagnostic_buffer.lock().unwrap();
+            text.push_str(&String::from_utf8_lossy(&buffer));
+            if text.len() > 8192 {
+                let mut keep_from = text.len() - 8192;
+                while !text.is_char_boundary(keep_from) {
+                    keep_from += 1;
+                }
+                text.drain(..keep_from);
+            }
+        }
+    });
+    let (ready, readiness) = mpsc::channel();
+    let progress = std::thread::spawn(move || {
+        let mut notified = false;
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if !notified
+                && line
+                    .strip_prefix("frame=")
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .is_some_and(|frame| frame > 0)
+            {
+                let _ = ready.send(());
+                notified = true;
+            }
+        }
+    });
+    let mut process = RecordingProcess {
+        child,
+        diagnostics,
+        readers: vec![errors, progress],
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match process.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "FFmpeg exited before recording started ({status}): {}",
+                    process.error_details()
+                ));
+            }
+            Err(error) => {
+                process.stop("ffmpeg startup");
+                return Err(format!("Failed to check FFmpeg startup: {error}"));
+            }
+            Ok(None) => {}
+        }
+        if readiness.try_recv().is_ok() {
+            return Ok(process);
+        }
+        if Instant::now() >= deadline {
+            process.stop("ffmpeg startup");
+            return Err(format!(
+                "FFmpeg did not record a frame within {timeout:?}: {}",
+                process.error_details()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Lets FFmpeg write its container trailer before falling back to forced termination.
@@ -364,5 +523,103 @@ mod tests {
         terminate_child_process(&mut child, "finished ffmpeg");
         terminate_child_process(&mut child, "finished ffmpeg");
         assert!(child.try_wait().unwrap().unwrap().success());
+    }
+
+    fn generated_recording_command(output: &std::path::Path) -> Command {
+        let mut command = Command::new(ffmpeg_tool("ffmpeg"));
+        command
+            .args([
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ])
+            .arg(output);
+        command
+    }
+
+    #[test]
+    fn confirmed_recording_produces_a_complete_file() {
+        let directory = output_directory();
+        let output = directory.join("confirmed.mkv");
+        let mut process = spawn_recording(&mut generated_recording_command(&output)).unwrap();
+        assert!(process.try_wait().unwrap().is_none());
+        process.stop("confirmed ffmpeg");
+        let decoded = Command::new(ffmpeg_tool("ffmpeg"))
+            .args(["-v", "error", "-i"])
+            .arg(&output)
+            .args(["-f", "null", "-"])
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success() && decoded.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
+    }
+
+    #[test]
+    fn startup_reports_ffmpeg_errors_and_preserves_existing_files() {
+        let directory = output_directory();
+        let output = directory.join("existing.mkv");
+        fs::write(&output, b"existing recording").unwrap();
+        let error = spawn_recording(&mut generated_recording_command(&output))
+            .err()
+            .expect("Existing file must be rejected");
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(fs::read(&output).unwrap(), b"existing recording");
+
+        let mut bad_input = Command::new(ffmpeg_tool("ffmpeg"));
+        bad_input.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "missing_snaplock_filter",
+            "-f",
+            "null",
+            "-",
+        ]);
+        let error = spawn_recording(&mut bad_input)
+            .err()
+            .expect("Invalid input must fail");
+        assert!(error.contains("missing_snaplock_filter"), "{error}");
+
+        let bad_output = directory.join("missing-directory").join("output.mkv");
+        let error = spawn_recording(&mut generated_recording_command(&bad_output))
+            .err()
+            .expect("Invalid output must fail");
+        assert!(error.contains("No such file or directory"), "{error}");
+    }
+
+    #[test]
+    fn startup_without_frames_times_out_and_reaps_the_process() {
+        let directory = output_directory();
+        let output = directory.join("no-frames.mkv");
+        let mut command = Command::new(ffmpeg_tool("ffmpeg"));
+        command
+            .args([
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30",
+                "-vf",
+                "select=0",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(&output);
+        let timeout = Duration::from_millis(500);
+        let started = Instant::now();
+        let error = spawn_recording_with_timeout(&mut command, timeout)
+            .err()
+            .expect("No frames must not count as success");
+        assert!(error.contains("did not record a frame"), "{error}");
+        assert!(started.elapsed() >= timeout && started.elapsed() < Duration::from_secs(3));
     }
 }

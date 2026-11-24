@@ -1,13 +1,14 @@
-use chrono::Local;
-use std::process::{Child, Command};
+use crate::process_utils::RecordingProcess;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 lazy_static::lazy_static! {
-    pub static ref FFMPEG_PROCESS: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    pub static ref FFMPEG_PROCESS: Arc<Mutex<Option<RecordingProcess>>> = Arc::new(Mutex::new(None));
 }
+static SCREEN_RECORDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SCREEN_RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
 static LAST_SCREEN_RECORDING_FAILURE_MS: AtomicU64 = AtomicU64::new(0);
 const SCREEN_RECORDING_RETRY_COOLDOWN_MS: u64 = 5_000;
@@ -41,35 +42,36 @@ pub fn screen_recording_retry_remaining_ms() -> Option<u64> {
     }
 }
 
-fn refresh_screen_recording_state(process_guard: &mut Option<Child>) -> bool {
-    let mut should_clear = false;
-    let is_running = match process_guard.as_mut() {
-        Some(child) => match child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(status)) => {
-                log::warn!("ffmpeg 录制进程已退出，状态: {:?}", status);
-                should_clear = true;
-                false
-            }
-            Err(error) => {
-                log::error!("检查 ffmpeg 录制进程状态失败: {}", error);
-                should_clear = true;
-                false
-            }
-        },
-        None => false,
+fn refresh_screen_recording_state(
+    process_guard: &mut Option<RecordingProcess>,
+) -> Result<bool, String> {
+    let Some(process) = process_guard.as_mut() else {
+        return Ok(false);
     };
-
-    if should_clear {
-        *process_guard = None;
-    }
-
-    is_running
+    let error = match process.try_wait() {
+        Ok(None) => return Ok(true),
+        Ok(Some(status)) => format!(
+            "屏幕录像进程意外退出 ({status}): {}",
+            process.error_details()
+        ),
+        Err(error) => {
+            process.stop("ffmpeg");
+            format!("无法检查屏幕录像进程: {error}")
+        }
+    };
+    *process_guard = None;
+    SCREEN_RECORDING_ACTIVE.store(false, Ordering::SeqCst);
+    mark_screen_recording_failure();
+    Err(error)
 }
 
+/// Input hooks only read an atomic flag; process checks run outside the native hook.
 pub fn is_screen_recording_running() -> bool {
-    let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-    refresh_screen_recording_state(&mut process_guard)
+    SCREEN_RECORDING_ACTIVE.load(Ordering::SeqCst)
+}
+
+pub fn check_screen_recording() -> Result<bool, String> {
+    refresh_screen_recording_state(&mut FFMPEG_PROCESS.lock().unwrap())
 }
 
 /// 启动屏幕录制并拍照
@@ -127,21 +129,6 @@ pub async fn start_screen_recording_with_options(
         }
     }
 
-    let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-    if refresh_screen_recording_state(&mut process_guard) {
-        log::warn!("录制进程已在运行，跳过启动请求");
-        return Ok(());
-    }
-
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let output_filename = format!("{}.mkv", timestamp);
-    let output_path = std::path::Path::new(&effective_save_path).join(output_filename);
-    let output_path_str = output_path
-        .to_str()
-        .ok_or_else(|| format!("输出路径包含无效 Unicode: {:?}", output_path))?;
-
-    log::info!("准备启动屏幕录制，保存至: {:?}", output_path);
-
     let ffmpeg_path = match app_handle.path().resolve(
         "libs/ffmpeg/bin/ffmpeg.exe",
         tauri::path::BaseDirectory::Resource,
@@ -150,42 +137,56 @@ pub async fn start_screen_recording_with_options(
         Err(e) => return Err(format!("无法解析ffmpeg路径: {}", e)),
     };
 
-    let mut command = Command::new(ffmpeg_path);
-    command.args([
-        "-f",
-        "gdigrab",
-        "-framerate",
-        "30",
-        "-i",
-        "desktop",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-vf",
-        "scale=iw/2:-2",
-        "-b:v",
-        "2000k",
-        "-maxrate",
-        "3000k",
-        "-bufsize",
-        "2000k",
-        output_path_str,
-    ]);
-    crate::process_utils::configure_recording_command(&mut command);
-
-    match command.spawn() {
+    let result = tokio::task::spawn_blocking(move || -> Result<RecordingProcess, String> {
+        let directory = std::path::Path::new(&effective_save_path);
+        std::fs::create_dir_all(directory).map_err(|error| format!("无法创建录像目录: {error}"))?;
+        let output_path = crate::media_files::capture_path(directory, "snaplock_screen_", "mkv");
+        log::info!("准备启动屏幕录制，保存至: {:?}", output_path);
+        let mut command = Command::new(ffmpeg_path);
+        command
+            .args([
+                "-f",
+                "gdigrab",
+                "-framerate",
+                "30",
+                "-i",
+                "desktop",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-vf",
+                "scale=iw/2:-2",
+                "-b:v",
+                "2000k",
+                "-maxrate",
+                "3000k",
+                "-bufsize",
+                "2000k",
+            ])
+            .arg(&output_path);
+        let mut process = crate::process_utils::spawn_recording(&mut command)?;
+        if let Err(error) = process.assign_to_job() {
+            process.stop("ffmpeg");
+            return Err(error);
+        }
+        Ok(process)
+    })
+    .await
+    .map_err(|error| format!("Screen recording startup task failed: {error}"))?;
+    match result {
         Ok(mut child) => {
-            log::info!("ffmpeg进程已成功启动，PID: {}", child.id());
-            if let Err(error) = crate::process_utils::assign_child_to_kill_on_close_job(&mut child)
-            {
-                log::error!("无法将 ffmpeg 进程纳入 Job Object: {}", error);
-                crate::process_utils::terminate_child_process(&mut child, "ffmpeg");
-                mark_screen_recording_failure();
-                return Err(error);
+            let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
+            match refresh_screen_recording_state(&mut process_guard) {
+                Ok(false) => {}
+                other => {
+                    child.stop("duplicate ffmpeg");
+                    return other.map(|_| ());
+                }
             }
-
+            log::info!("屏幕录像已开始，PID: {}", child.id());
             *process_guard = Some(child);
+            SCREEN_RECORDING_ACTIVE.store(true, Ordering::SeqCst);
             clear_screen_recording_failure();
             Ok(())
         }
@@ -203,20 +204,68 @@ pub async fn stop_screen_recording() {
     if let Err(error) = tokio::task::spawn_blocking(|| {
         let child = {
             let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-            if !refresh_screen_recording_state(&mut process_guard) {
-                log::info!("没有正在运行的ffmpeg录制进程");
-                return;
-            }
+            SCREEN_RECORDING_ACTIVE.store(false, Ordering::SeqCst);
             process_guard.take()
         };
         // Input callbacks must not wait on the process mutex while FFmpeg finalizes.
         if let Some(mut child) = child {
             log::info!("正在停止ffmpeg录制进程 (PID: {})...", child.id());
-            crate::process_utils::terminate_child_process(&mut child, "ffmpeg");
+            child.stop("ffmpeg");
         }
     })
     .await
     {
         log::error!("Failed to join screen recording cleanup: {error}");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn unexpected_recording_exit_is_reported_and_clears_active_state() {
+        let directory = crate::media_files::capture_path(
+            Path::new(r"D:\Temp\Pi"),
+            "snaplock-runtime-exit-",
+            "test",
+        );
+        std::fs::create_dir(&directory).unwrap();
+        let tool = Path::new(env!("CARGO_MANIFEST_DIR")).join("libs/ffmpeg/bin/ffmpeg.exe");
+        let mut command = Command::new(tool);
+        command
+            .args([
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-t",
+                "1",
+            ])
+            .arg(directory.join("short.mkv"));
+        let process = crate::process_utils::spawn_recording(&mut command).unwrap();
+        let mut process_guard = Some(process);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match refresh_screen_recording_state(&mut process_guard) {
+                Err(error) => {
+                    assert!(error.contains("意外退出"), "{error}");
+                    assert!(process_guard.is_none());
+                    assert!(!is_screen_recording_running());
+                    break;
+                }
+                Ok(true) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25))
+                }
+                other => panic!("Unexpected recording state: {other:?}"),
+            }
+        }
     }
 }

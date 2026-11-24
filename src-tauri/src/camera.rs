@@ -1,5 +1,5 @@
+use crate::process_utils::RecordingProcess;
 use base64::{Engine as _, engine::general_purpose};
-use chrono::Local;
 use image::{ImageBuffer, RgbImage};
 use nokhwa::{
     Camera,
@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, command};
 
@@ -23,7 +23,7 @@ pub struct CameraListItem {
 }
 
 lazy_static::lazy_static! {
-    pub static ref VIDEO_PROCESSES: Mutex<HashMap<u32, Child>> = Mutex::new(HashMap::new());
+    pub static ref VIDEO_PROCESSES: Mutex<HashMap<u32, RecordingProcess>> = Mutex::new(HashMap::new());
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -74,7 +74,7 @@ fn resolve_camera_info(camera_id: u32) -> Result<CameraInfo, String> {
     ))
 }
 
-fn prune_finished_video_processes(processes: &mut HashMap<u32, Child>) {
+fn prune_finished_video_processes(processes: &mut HashMap<u32, RecordingProcess>) {
     let mut finished_camera_ids = Vec::new();
 
     for (camera_id, child) in processes.iter_mut() {
@@ -288,13 +288,12 @@ pub async fn take_photo(camera_id: u32, save_path: Option<String>) -> Result<Str
             .ok_or("Failed to create image buffer from raw data")?;
 
         let base_path = get_save_path(save_path)?;
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("snaplock_capture_{}.jpg", timestamp);
-        let filepath = base_path.join(&filename);
+        let (filepath, mut file) = crate::media_files::create_photo(&base_path)
+            .map_err(|error| format!("Failed to create photo: {error}"))?;
 
         println!("Saving image to: {}", filepath.display());
         rgb_image
-            .save(&filepath)
+            .write_to(&mut file, image::ImageFormat::Jpeg)
             .map_err(|e| format!("Failed to save image to '{}': {}", filepath.display(), e))?;
 
         Ok(filepath.to_string_lossy().to_string())
@@ -426,9 +425,7 @@ pub async fn start_video_recording(
         }
 
         let base_path = get_save_path(save_path)?;
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("snaplock_video_{}.mkv", timestamp);
-        let filepath = base_path.join(&filename);
+        let filepath = crate::media_files::capture_path(&base_path, "snaplock_video_", "mkv");
 
         let ffmpeg_path = match app_handle.path().resolve(
             "libs/ffmpeg/bin/ffmpeg.exe",
@@ -447,18 +444,16 @@ pub async fn start_video_recording(
 
         match result {
             Ok(mut child) => {
-                if let Err(error) =
-                    crate::process_utils::assign_child_to_kill_on_close_job(&mut child)
-                {
+                if let Err(error) = child.assign_to_job() {
                     log::error!("无法将摄像头录像进程纳入 Job Object: {}", error);
-                    crate::process_utils::terminate_child_process(&mut child, "camera ffmpeg");
+                    child.stop("camera ffmpeg");
                     return Err(error);
                 }
 
                 let mut processes = VIDEO_PROCESSES.lock().unwrap();
                 prune_finished_video_processes(&mut processes);
                 if processes.contains_key(&camera_id) {
-                    crate::process_utils::terminate_child_process(&mut child, "camera ffmpeg");
+                    child.stop("camera ffmpeg");
                     return Err(format!("Camera {} is already recording", camera_id));
                 }
                 processes.insert(camera_id, child);
@@ -483,7 +478,7 @@ fn try_simple_recording(
     camera_id: u32,
     filepath: &PathBuf,
     duration_seconds: Option<u32>,
-) -> Result<Child, String> {
+) -> Result<RecordingProcess, String> {
     let duration = duration_seconds.unwrap_or(5);
     let mut command = Command::new(ffmpeg_path);
 
@@ -506,7 +501,6 @@ fn try_simple_recording(
             .arg("yuv420p")
             .arg("-t")
             .arg(&duration.to_string())
-            .arg("-y")
             .arg(filepath);
     } else {
         command
@@ -524,14 +518,11 @@ fn try_simple_recording(
             .arg("yuv420p")
             .arg("-t")
             .arg(&duration.to_string())
-            .arg("-y")
             .arg(filepath);
     }
 
     println!("Trying simple recording command: {:?}", command);
-    crate::process_utils::configure_recording_command(&mut command);
-
-    command.spawn().map_err(|e| {
+    crate::process_utils::spawn_recording(&mut command).map_err(|e| {
         let cmd_str = format!("{:?}", command);
         format!(
             "Failed to start ffmpeg process: {}. Command: {}",
@@ -556,7 +547,7 @@ pub async fn stop_video_recording() -> Result<(), String> {
 
         for (camera_id, mut child) in processes.drain() {
             println!("Stopping video recording for camera {}", camera_id);
-            crate::process_utils::terminate_child_process(&mut child, "camera ffmpeg");
+            child.stop("camera ffmpeg");
         }
 
         println!("All video recordings stopped");

@@ -7,6 +7,7 @@ mod config;
 mod constants;
 mod handlers;
 mod logger;
+mod media_files;
 mod monitoring;
 mod monitoring_controller;
 mod process_utils;
@@ -47,15 +48,10 @@ fn main() {
             // 初始化会话监控器 (仅Windows)
             #[cfg(target_os = "windows")]
             {
-                if let Err(e) = session_monitor::init_session_monitor(handle.clone()) {
-                    log::error!("初始化会话监控器失败: {}", e);
+                if let Err(e) = session_monitor::start_session_monitoring(handle.clone()) {
+                    log::error!("启动会话监控失败: {}", e);
                 } else {
-                    // 启动会话监控
-                    if let Err(e) = session_monitor::start_session_monitoring() {
-                        log::error!("启动会话监控失败: {}", e);
-                    } else {
-                        log::info!("会话监控已启动");
-                    }
+                    log::info!("会话监控已启动");
                 }
             }
 
