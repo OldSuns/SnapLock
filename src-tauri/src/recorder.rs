@@ -120,7 +120,17 @@ pub fn recording_command(
         )
         .map_err(|error| format!("无法解析ffmpeg路径: {error}"))?;
     let output = crate::media_files::capture_path(directory, prefix, "mkv");
-    Ok((Command::new(tool), output))
+    Ok((Command::new(ffmpeg_program(tool)), output))
+}
+
+/// Prefers the bundled FFmpeg. A standalone executable has no resources beside it,
+/// so a bare program name is resolved from the executable's directory and `PATH`.
+fn ffmpeg_program(bundled: PathBuf) -> PathBuf {
+    if bundled.is_file() {
+        bundled
+    } else {
+        PathBuf::from("ffmpeg")
+    }
 }
 
 pub async fn start_screen_recording(app: AppHandle) -> Result<(), String> {
@@ -187,6 +197,20 @@ pub async fn stop_screen_recording(app: AppHandle) {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_bundled_ffmpeg_is_found_through_path() {
+        let bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("libs/ffmpeg/bin");
+        let bundled = bin.join("ffmpeg.exe");
+        assert_eq!(ffmpeg_program(bundled.clone()), bundled);
+
+        let output = Command::new(ffmpeg_program(bin.join("missing/ffmpeg.exe")))
+            .env("PATH", &bin)
+            .arg("-version")
+            .output()
+            .expect("FFmpeg must be found through PATH");
+        assert!(output.status.success());
+    }
 
     #[test]
     fn unexpected_recording_exit_is_reported_and_clears_active_state() {

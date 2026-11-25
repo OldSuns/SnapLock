@@ -65,7 +65,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --bin SnapLock
 pnpm.cmd tauri build
 ```
 
-该命令会自动构建前端，Windows 安装包输出到 `src-tauri/target/release/bundle/nsis/`。目录运行时需保留可执行文件旁的 `libs/ffmpeg` 资源。
+该命令会自动构建前端，Windows 安装包输出到 `src-tauri/target/release/bundle/nsis/`。目录运行时优先使用可执行文件旁的 `libs/ffmpeg` 资源；缺少该资源时（如只复制可执行文件）改用同目录或 `PATH` 中的 `ffmpeg`，需支持 `gdigrab`、`dshow` 和 `libx264`。
 
 ### 代码结构
 
