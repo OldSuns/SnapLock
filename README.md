@@ -28,11 +28,14 @@ Windows 解锁后，应用会停止监控并清理录制进程。
 - **拍摄时长**：设置为 0 秒时拍照，1–60 秒时录制对应时长的摄像头视频；此设置不影响屏幕录制。
 - **保存目录**：默认为桌面，可在设置中更改。启用文件日志后，日志保存在同一目录；照片与录像使用唯一文件名并禁止覆盖。
 - **快捷键**：默认 `Alt+L`，可自定义。启动时若快捷键被占用，会尝试备用组合。
+- **解锁失败拍照**：在设置的“安全选项”中开启，默认关闭。SnapLock 运行期间，Windows 锁定后每次输错 Windows Hello PIN，都会用当前摄像头拍一张照片存入保存目录，无需启动监控，也不受拍摄时长影响。密码输错、指纹或人脸识别失败不会触发；开启“触发后退出”时，监控触发后程序已退出，不再拍照。
 - **其他选项**：默认摄像头、明暗主题、系统通知、触发后退出，以及实时日志显示和文件保存。
 
 开机自启动由系统保存，打开设置时读取当前状态，修改失败时显示错误。其他设置即时保存到 `%APPDATA%\SnapLock\snaplock_config.json`，兼容旧配置。保存失败时保留原值并显示错误。
 
 屏幕录像初始化失败或录制进程意外退出时，应用会停止监控并显示错误。停止录像会先请求 FFmpeg 完成文件写入，超时后强制终止；异常终止的录像可能不完整。
+
+解锁失败拍照依据 Windows 事件日志 `Microsoft-Windows-HelloForBusiness/Operational` 中的 PIN 登录失败记录，无需管理员权限。开启时若无法订阅该日志，开关保持关闭并显示错误；程序启动时订阅失败只记录日志。拍照失败时在主窗口显示错误。
 
 ## 开发
 
@@ -52,9 +55,9 @@ pnpm.cmd build
 cargo test --locked --manifest-path src-tauri/Cargo.toml --bin SnapLock
 ```
 
-`pnpm.cmd build` 执行前端类型检查和构建。Rust 测试覆盖配置校验与持久化、监控状态与任务取消、会话消息过滤，以及 FFmpeg 启动、停止、异常退出、防覆盖和完整解码。
+`pnpm.cmd build` 执行前端类型检查和构建。Rust 测试覆盖配置校验与持久化、监控状态与任务取消、会话消息过滤与锁定状态查询、PIN 登录失败事件订阅，以及 FFmpeg 启动、停止、异常退出、防覆盖和完整解码。
 
-测试前需创建 `D:\Temp\Pi`，测试产物保存在其下的 `snaplock-*` 路径。自动测试不覆盖真实系统锁屏与解锁，摄像头预览、拍摄和实际输入触发需另行实机验证。
+测试前需创建 `D:\Temp\Pi`，测试产物保存在其下的 `snaplock-*` 路径。自动测试不覆盖真实系统锁屏与解锁，摄像头预览、拍摄、实际输入触发和 PIN 解锁失败拍照需另行实机验证。
 
 ### 构建安装包
 
@@ -72,7 +75,8 @@ pnpm.cmd tauri build
 | [config.rs](src-tauri/src/config.rs) 与 [state.rs](src-tauri/src/state.rs) | 配置校验、保存与运行状态 |
 | [monitoring/](src-tauri/src/monitoring/) | 监控生命周期、输入监听与触发动作，统一处理取消和清理 |
 | [camera.rs](src-tauri/src/camera.rs)、[recorder.rs](src-tauri/src/recorder.rs) 与 [process_utils.rs](src-tauri/src/process_utils.rs) | 摄像头操作、录像进程管理、启动确认与停止清理 |
-| [session_monitor.rs](src-tauri/src/session_monitor.rs) | 当前 Windows 会话的锁定与解锁通知 |
+| [session_monitor.rs](src-tauri/src/session_monitor.rs) | 当前 Windows 会话的锁定与解锁通知、锁定状态查询 |
+| [failed_unlock.rs](src-tauri/src/failed_unlock.rs) | 订阅 PIN 登录失败事件，在会话锁定时拍照 |
 
 问题反馈请提交 [Issues](https://github.com/OldSuns/snaplock/issues)，代码贡献请提交 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
 

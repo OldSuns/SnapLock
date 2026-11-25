@@ -2,12 +2,15 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::RemoteDesktop::{
-    NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+    NOTIFY_FOR_THIS_SESSION, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+    WTS_SESSIONSTATE_UNLOCK, WTSFreeMemory, WTSINFOEXW, WTSQuerySessionInformationW,
+    WTSRegisterSessionNotification, WTSSessionInfoEx, WTSUnRegisterSessionNotification,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     WM_NCDESTROY, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
+use windows::core::PWSTR;
 
 use crate::monitoring::MonitoringController;
 
@@ -106,9 +109,38 @@ pub fn start_session_monitoring(app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Reports whether Windows considers the current session unlocked.
+/// A locked session, or one whose state Windows does not know, yields `false`.
+pub fn is_session_unlocked() -> windows::core::Result<bool> {
+    let mut buffer = PWSTR::null();
+    let mut size = 0;
+    unsafe {
+        WTSQuerySessionInformationW(
+            Some(WTS_CURRENT_SERVER_HANDLE),
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &mut buffer,
+            &mut size,
+        )?;
+        // For this information class the buffer holds a WTSINFOEXW instead of a string.
+        let unlocked = size as usize >= size_of::<WTSINFOEXW>() && {
+            let info = buffer.0.cast::<WTSINFOEXW>().read_unaligned();
+            info.Level == 1
+                && info.Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_UNLOCK as i32
+        };
+        WTSFreeMemory(buffer.0.cast());
+        Ok(unlocked)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_current_session_lock_state_can_be_queried() {
+        assert!(is_session_unlocked().is_ok());
+    }
 
     #[test]
     fn only_session_lock_and_unlock_notifications_change_state() {

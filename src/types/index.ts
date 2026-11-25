@@ -17,6 +17,7 @@ export interface AppConfig {
   default_camera_id: number | null;
   capture_delay_seconds: number;
   capture_mode: 'Video';
+  capture_on_failed_unlock: boolean;
 }
 
 export interface LogEntry {

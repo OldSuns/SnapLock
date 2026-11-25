@@ -14,6 +14,8 @@ mod recorder;
 mod state;
 
 #[cfg(target_os = "windows")]
+mod failed_unlock;
+#[cfg(target_os = "windows")]
 mod session_monitor;
 
 use crate::{monitoring::MonitoringController, state::AppState};
@@ -52,6 +54,16 @@ fn main() {
                     log::error!("启动会话监控失败: {}", e);
                 } else {
                     log::info!("会话监控已启动");
+                }
+            }
+
+            // Resume failed unlock capture when it was enabled in an earlier run.
+            #[cfg(target_os = "windows")]
+            {
+                if handle.state::<AppState>().config().capture_on_failed_unlock {
+                    if let Err(error) = failed_unlock::ensure_started(&handle) {
+                        log::error!("Failed to watch for failed PIN unlocks: {error}");
+                    }
                 }
             }
 

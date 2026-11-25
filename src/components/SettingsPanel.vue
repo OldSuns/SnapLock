@@ -190,6 +190,10 @@ onUnmounted(() => {
                 <label v-for="action in actions" :key="action.value" class="radio-item"><input type="radio" name="post-trigger-action" :value="action.value" :checked="config.post_trigger_action === action.value" @change="save('post_trigger_action', action.value)" class="radio-input" /><span class="radio-label">{{ action.label }}</span></label>
               </div>
               <label class="checkbox-item"><input type="checkbox" :checked="config.exit_on_lock" @change="save('exit_on_lock', ($event.target as HTMLInputElement).checked)" class="checkbox-input" /><span class="checkbox-label">电脑锁定时自动退出程序</span></label>
+              <div>
+                <label class="checkbox-item"><input type="checkbox" :checked="config.capture_on_failed_unlock" @change="save('capture_on_failed_unlock', ($event.target as HTMLInputElement).checked)" class="checkbox-input" /><span class="checkbox-label">PIN 解锁失败时拍照</span></label>
+                <div class="setting-description">锁屏后每次输错 PIN 拍一张照片，无需启动监控</div>
+              </div>
             </div>
           </div>
           <div class="setting-item">
