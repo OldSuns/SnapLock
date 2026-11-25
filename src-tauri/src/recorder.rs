@@ -1,229 +1,192 @@
-use crate::process_utils::RecordingProcess;
+use crate::process_utils::{RecordingProcess, spawn_recording};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
-lazy_static::lazy_static! {
-    pub static ref FFMPEG_PROCESS: Arc<Mutex<Option<RecordingProcess>>> = Arc::new(Mutex::new(None));
-}
-static SCREEN_RECORDING_ACTIVE: AtomicBool = AtomicBool::new(false);
-static SCREEN_RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
-static LAST_SCREEN_RECORDING_FAILURE_MS: AtomicU64 = AtomicU64::new(0);
-const SCREEN_RECORDING_RETRY_COOLDOWN_MS: u64 = 5_000;
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecordingSource {
+    Screen,
+    Camera(u32),
 }
 
-fn mark_screen_recording_failure() {
-    LAST_SCREEN_RECORDING_FAILURE_MS.store(now_millis(), Ordering::SeqCst);
+/// Owns all recording children. Native input callbacks only read the active flag.
+#[derive(Default)]
+pub struct Recordings {
+    processes: Mutex<HashMap<RecordingSource, RecordingProcess>>,
+    screen_active: AtomicBool,
+    screen_failure: Mutex<Option<Instant>>,
 }
 
-fn clear_screen_recording_failure() {
-    LAST_SCREEN_RECORDING_FAILURE_MS.store(0, Ordering::SeqCst);
-}
-
-pub fn screen_recording_retry_remaining_ms() -> Option<u64> {
-    let last_failure = LAST_SCREEN_RECORDING_FAILURE_MS.load(Ordering::SeqCst);
-    if last_failure == 0 {
-        return None;
+impl Recordings {
+    pub fn screen_active(&self) -> bool {
+        self.screen_active.load(Ordering::SeqCst)
     }
 
-    let elapsed = now_millis().saturating_sub(last_failure);
-    if elapsed >= SCREEN_RECORDING_RETRY_COOLDOWN_MS {
-        None
-    } else {
-        Some(SCREEN_RECORDING_RETRY_COOLDOWN_MS - elapsed)
-    }
-}
-
-fn refresh_screen_recording_state(
-    process_guard: &mut Option<RecordingProcess>,
-) -> Result<bool, String> {
-    let Some(process) = process_guard.as_mut() else {
-        return Ok(false);
-    };
-    let error = match process.try_wait() {
-        Ok(None) => return Ok(true),
-        Ok(Some(status)) => format!(
-            "屏幕录像进程意外退出 ({status}): {}",
-            process.error_details()
-        ),
-        Err(error) => {
-            process.stop("ffmpeg");
-            format!("无法检查屏幕录像进程: {error}")
-        }
-    };
-    *process_guard = None;
-    SCREEN_RECORDING_ACTIVE.store(false, Ordering::SeqCst);
-    mark_screen_recording_failure();
-    Err(error)
-}
-
-/// Input hooks only read an atomic flag; process checks run outside the native hook.
-pub fn is_screen_recording_running() -> bool {
-    SCREEN_RECORDING_ACTIVE.load(Ordering::SeqCst)
-}
-
-pub fn check_screen_recording() -> Result<bool, String> {
-    refresh_screen_recording_state(&mut FFMPEG_PROCESS.lock().unwrap())
-}
-
-/// 启动屏幕录制并拍照
-pub async fn start_screen_recording(app_handle: AppHandle) -> Result<(), String> {
-    start_screen_recording_with_options(app_handle, true).await
-}
-
-pub async fn start_screen_recording_with_options(
-    app_handle: AppHandle,
-    capture_photo: bool,
-) -> Result<(), String> {
-    if SCREEN_RECORDING_STARTING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        log::info!("屏幕录制启动已在进行中，跳过重复请求");
-        return Ok(());
+    pub fn screen_retry_remaining(&self) -> Option<Duration> {
+        self.screen_failure
+            .lock()
+            .unwrap()
+            .and_then(|failure| Duration::from_secs(5).checked_sub(failure.elapsed()))
     }
 
-    struct StartGuard;
-    impl Drop for StartGuard {
-        fn drop(&mut self) {
-            SCREEN_RECORDING_STARTING.store(false, Ordering::SeqCst);
-        }
-    }
-    let _start_guard = StartGuard;
-
-    if let Some(remaining_ms) = screen_recording_retry_remaining_ms() {
-        return Err(format!(
-            "屏幕录制启动冷却中，请在 {} ms 后重试",
-            remaining_ms
-        ));
-    }
-
-    if is_screen_recording_running() {
-        log::warn!("录制进程已在运行，跳过启动请求");
-        return Ok(());
-    }
-
-    let (camera_id, save_path, effective_save_path) = {
-        let state = app_handle.state::<crate::state::AppState>();
-        (
-            state.camera_id(),
-            state.save_path(),
-            state.get_effective_save_path(),
-        )
-    };
-
-    if capture_photo {
-        log::info!("开始拍照后启动屏幕录制...");
-        if let Err(error) = crate::camera::take_photo(camera_id, save_path).await {
-            log::error!("拍照失败: {}", error);
-        } else {
-            log::info!("拍照完成");
-        }
-    }
-
-    let ffmpeg_path = match app_handle.path().resolve(
-        "libs/ffmpeg/bin/ffmpeg.exe",
-        tauri::path::BaseDirectory::Resource,
-    ) {
-        Ok(path) => path,
-        Err(e) => return Err(format!("无法解析ffmpeg路径: {}", e)),
-    };
-
-    let result = tokio::task::spawn_blocking(move || -> Result<RecordingProcess, String> {
-        let directory = std::path::Path::new(&effective_save_path);
-        std::fs::create_dir_all(directory).map_err(|error| format!("无法创建录像目录: {error}"))?;
-        let output_path = crate::media_files::capture_path(directory, "snaplock_screen_", "mkv");
-        log::info!("准备启动屏幕录制，保存至: {:?}", output_path);
-        let mut command = Command::new(ffmpeg_path);
-        command
-            .args([
-                "-f",
-                "gdigrab",
-                "-framerate",
-                "30",
-                "-i",
-                "desktop",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-vf",
-                "scale=iw/2:-2",
-                "-b:v",
-                "2000k",
-                "-maxrate",
-                "3000k",
-                "-bufsize",
-                "2000k",
-            ])
-            .arg(&output_path);
-        let mut process = crate::process_utils::spawn_recording(&mut command)?;
-        if let Err(error) = process.assign_to_job() {
-            process.stop("ffmpeg");
-            return Err(error);
-        }
-        Ok(process)
-    })
-    .await
-    .map_err(|error| format!("Screen recording startup task failed: {error}"))?;
-    match result {
-        Ok(mut child) => {
-            let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-            match refresh_screen_recording_state(&mut process_guard) {
-                Ok(false) => {}
-                other => {
-                    child.stop("duplicate ffmpeg");
-                    return other.map(|_| ());
-                }
+    pub fn start(&self, source: RecordingSource, command: &mut Command) -> Result<(), String> {
+        let mut processes = self.processes.lock().unwrap();
+        if let Some(process) = processes.get_mut(&source) {
+            if process
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return if source == RecordingSource::Screen {
+                    Ok(())
+                } else {
+                    Err(format!("{source:?} is already recording"))
+                };
             }
-            log::info!("屏幕录像已开始，PID: {}", child.id());
-            *process_guard = Some(child);
-            SCREEN_RECORDING_ACTIVE.store(true, Ordering::SeqCst);
-            clear_screen_recording_failure();
-            Ok(())
+            processes.remove(&source);
         }
-        Err(error) => {
-            let err_msg = format!("启动ffmpeg失败: {}", error);
-            log::error!("{}", err_msg);
-            mark_screen_recording_failure();
-            Err(err_msg)
+        let mut process = spawn_recording(command)?;
+        process.assign_to_job()?;
+        log::info!("Recording started: {source:?}, PID: {}", process.id());
+        processes.insert(source, process);
+        if source == RecordingSource::Screen {
+            self.screen_active.store(true, Ordering::SeqCst);
+            *self.screen_failure.lock().unwrap() = None;
+        }
+        Ok(())
+    }
+
+    pub fn check_screen(&self) -> Result<bool, String> {
+        let mut processes = self.processes.lock().unwrap();
+        let Some(process) = processes.get_mut(&RecordingSource::Screen) else {
+            return Ok(false);
+        };
+        let error = match process.try_wait() {
+            Ok(None) => return Ok(true),
+            Ok(Some(status)) => format!(
+                "屏幕录像进程意外退出 ({status}): {}",
+                process.error_details()
+            ),
+            Err(error) => format!("无法检查屏幕录像进程: {error}"),
+        };
+        processes.remove(&RecordingSource::Screen);
+        self.screen_active.store(false, Ordering::SeqCst);
+        *self.screen_failure.lock().unwrap() = Some(Instant::now());
+        Err(error)
+    }
+
+    pub fn stop_matching(&self, select: impl Fn(RecordingSource) -> bool) {
+        let processes = {
+            let mut guard = self.processes.lock().unwrap();
+            let sources: Vec<_> = guard
+                .keys()
+                .copied()
+                .filter(|source| select(*source))
+                .collect();
+            sources
+                .into_iter()
+                .filter_map(|source| {
+                    if source == RecordingSource::Screen {
+                        self.screen_active.store(false, Ordering::SeqCst);
+                    }
+                    guard.remove(&source)
+                })
+                .collect::<Vec<_>>()
+        };
+        // Release shared state before waiting for FFmpeg to finalize its files.
+        for mut process in processes {
+            process.stop("ffmpeg");
         }
     }
 }
 
-/// 停止屏幕录制
-pub async fn stop_screen_recording() {
-    if let Err(error) = tokio::task::spawn_blocking(|| {
-        let child = {
-            let mut process_guard = FFMPEG_PROCESS.lock().unwrap();
-            SCREEN_RECORDING_ACTIVE.store(false, Ordering::SeqCst);
-            process_guard.take()
-        };
-        // Input callbacks must not wait on the process mutex while FFmpeg finalizes.
-        if let Some(mut child) = child {
-            log::info!("正在停止ffmpeg录制进程 (PID: {})...", child.id());
-            child.stop("ffmpeg");
+pub fn recording_command(
+    app: &AppHandle,
+    directory: &Path,
+    prefix: &str,
+) -> Result<(Command, PathBuf), String> {
+    std::fs::create_dir_all(directory).map_err(|error| format!("无法创建录像目录: {error}"))?;
+    let tool = app
+        .path()
+        .resolve(
+            "libs/ffmpeg/bin/ffmpeg.exe",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(|error| format!("无法解析ffmpeg路径: {error}"))?;
+    let output = crate::media_files::capture_path(directory, prefix, "mkv");
+    Ok((Command::new(tool), output))
+}
+
+pub async fn start_screen_recording(app: AppHandle) -> Result<(), String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let recordings = app.state::<Recordings>();
+        if let Some(remaining) = recordings.screen_retry_remaining() {
+            return Err(format!(
+                "屏幕录制启动冷却中，请在 {} ms 后重试",
+                remaining.as_millis()
+            ));
         }
+        let directory = app
+            .state::<crate::state::AppState>()
+            .config()
+            .effective_save_path();
+        let result = (|| {
+            let (mut command, output) =
+                recording_command(&app, Path::new(&directory), "snaplock_screen_")?;
+            command
+                .args([
+                    "-f",
+                    "gdigrab",
+                    "-framerate",
+                    "30",
+                    "-i",
+                    "desktop",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-vf",
+                    "scale=iw/2:-2",
+                    "-b:v",
+                    "2000k",
+                    "-maxrate",
+                    "3000k",
+                    "-bufsize",
+                    "2000k",
+                ])
+                .arg(output);
+            recordings.start(RecordingSource::Screen, &mut command)
+        })();
+        if result.is_err() {
+            *recordings.screen_failure.lock().unwrap() = Some(Instant::now());
+        }
+        result
+    })
+    .await
+    .map_err(|error| format!("Screen recording task failed: {error}"))?;
+    result.map_err(|error| format!("启动ffmpeg失败: {error}"))
+}
+
+pub async fn stop_screen_recording(app: AppHandle) {
+    if let Err(error) = tokio::task::spawn_blocking(move || {
+        app.state::<Recordings>()
+            .stop_matching(|source| source == RecordingSource::Screen);
     })
     .await
     {
-        log::error!("Failed to join screen recording cleanup: {error}");
+        log::error!("Screen recording cleanup failed: {error}");
     }
 }
 
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn unexpected_recording_exit_is_reported_and_clears_active_state() {
@@ -250,15 +213,18 @@ mod tests {
                 "1",
             ])
             .arg(directory.join("short.mkv"));
-        let process = crate::process_utils::spawn_recording(&mut command).unwrap();
-        let mut process_guard = Some(process);
+        let recordings = Recordings::default();
+        recordings
+            .start(RecordingSource::Screen, &mut command)
+            .unwrap();
+        assert!(recordings.screen_active());
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            match refresh_screen_recording_state(&mut process_guard) {
+            match recordings.check_screen() {
                 Err(error) => {
                     assert!(error.contains("意外退出"), "{error}");
-                    assert!(process_guard.is_none());
-                    assert!(!is_screen_recording_running());
+                    assert!(!recordings.screen_active());
+                    assert!(recordings.processes.lock().unwrap().is_empty());
                     break;
                 }
                 Ok(true) if Instant::now() < deadline => {

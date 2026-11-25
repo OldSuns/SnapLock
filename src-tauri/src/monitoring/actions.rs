@@ -1,21 +1,8 @@
 use std::process::Command;
-use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use crate::{
-    camera,
-    monitoring_controller::MonitoringController,
-    state::{AppState, MonitoringFlags},
-};
-use rdev::listen;
+use crate::{camera, monitoring::MonitoringController, state::AppState};
 use tauri::{AppHandle, Manager};
-
-pub(crate) fn should_ignore_input_event(
-    shortcut_in_progress: bool,
-    within_shortcut_window: bool,
-) -> bool {
-    shortcut_in_progress || within_shortcut_window
-}
 
 fn is_action_still_current(app_handle: &AppHandle, action_generation: u64) -> bool {
     app_handle
@@ -43,84 +30,6 @@ pub fn lock_screen() {
     }
 }
 
-pub fn ensure_listener_started(
-    app_handle: AppHandle,
-    monitoring_flags: Arc<MonitoringFlags>,
-) -> Result<(), String> {
-    if monitoring_flags.listener_ready() && monitoring_flags.is_listener_thread_alive() {
-        monitoring_flags.clear_listener_error();
-        return Ok(());
-    }
-
-    if let Ok(handle_guard) = monitoring_flags.listener_handle.lock() {
-        if let Some(handle) = handle_guard.as_ref() {
-            if !handle.is_finished() {
-                monitoring_flags.set_listener_ready(true);
-                monitoring_flags.clear_listener_error();
-                return Ok(());
-            }
-        }
-    }
-
-    let (tx, rx) = mpsc::channel::<String>();
-    let listener_app_handle = app_handle.clone();
-    let listener_flags = monitoring_flags.clone();
-    monitoring_flags.set_listener_ready(false);
-    monitoring_flags.clear_listener_error();
-
-    let handle = std::thread::spawn(move || {
-        log::info!("启动常驻 rdev 事件监听器...");
-
-        let callback_handle = listener_app_handle.clone();
-        if let Err(error) = listen(move |event| {
-            callback_handle
-                .state::<MonitoringController>()
-                .handle_input(event, &callback_handle);
-        }) {
-            let error_message = format!("rdev 事件监听器故障: {:?}", error);
-            log::error!("{}", error_message);
-            let _ = tx.send(error_message.clone());
-            listener_flags.set_listener_ready(false);
-            listener_flags.set_listener_error(Some(error_message));
-            let generation = listener_flags.current_action_generation();
-            tauri::async_runtime::spawn(async move {
-                listener_app_handle
-                    .state::<MonitoringController>()
-                    .listener_failed(&listener_app_handle, generation)
-                    .await;
-            });
-        }
-
-        log::info!("rdev 事件监听器线程退出");
-    });
-
-    monitoring_flags.set_listener_handle(handle);
-
-    match rx.recv_timeout(Duration::from_millis(300)) {
-        Ok(error) => {
-            monitoring_flags.set_listener_ready(false);
-            monitoring_flags.set_listener_error(Some(error.clone()));
-            Err(error)
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            monitoring_flags.set_listener_ready(true);
-            monitoring_flags.clear_listener_error();
-            Ok(())
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            if monitoring_flags.is_listener_thread_alive() {
-                monitoring_flags.set_listener_ready(true);
-                monitoring_flags.clear_listener_error();
-                Ok(())
-            } else {
-                monitoring_flags.set_listener_ready(false);
-                monitoring_flags.set_listener_error(Some("输入监听器启动失败".to_string()));
-                Err("输入监听器启动失败".to_string())
-            }
-        }
-    }
-}
-
 pub(crate) async fn trigger_lockdown(app_handle: AppHandle, action_generation: u64) {
     log::info!("=== 开始执行锁定流程 ===");
 
@@ -129,26 +38,14 @@ pub(crate) async fn trigger_lockdown(app_handle: AppHandle, action_generation: u
         return;
     }
 
-    let (
-        camera_id,
-        save_path,
-        exit_on_lock_enabled,
-        post_trigger_action,
-        notifications_enabled,
-        capture_delay_seconds,
-        capture_mode,
-    ) = {
-        let state = app_handle.state::<AppState>();
-        (
-            state.camera_id(),
-            state.save_path(),
-            state.exit_on_lock(),
-            state.post_trigger_action(),
-            state.enable_notifications(),
-            state.capture_delay_seconds(),
-            state.capture_mode(),
-        )
-    };
+    let state = app_handle.state::<AppState>();
+    let camera_id = state.camera_id();
+    let config = state.config();
+    let save_path = config.save_path;
+    let exit_on_lock_enabled = config.exit_on_lock;
+    let post_trigger_action = config.post_trigger_action;
+    let notifications_enabled = config.enable_notifications;
+    let capture_delay_seconds = config.capture_delay_seconds;
 
     let screen_lock_enabled = matches!(
         post_trigger_action,
@@ -156,13 +53,12 @@ pub(crate) async fn trigger_lockdown(app_handle: AppHandle, action_generation: u
     );
 
     log::info!(
-        "监控触发，使用摄像头ID: {}, 触发后动作: {:?}, 通知功能: {}, 锁定时退出: {}, 拍摄延迟: {}秒, 拍摄模式: {:?}",
+        "监控触发，使用摄像头ID: {}, 触发后动作: {:?}, 通知功能: {}, 锁定时退出: {}, 拍摄延迟: {}秒",
         camera_id,
         post_trigger_action,
         notifications_enabled,
         exit_on_lock_enabled,
-        capture_delay_seconds,
-        capture_mode
+        capture_delay_seconds
     );
 
     if capture_delay_seconds > 0 {
@@ -171,18 +67,16 @@ pub(crate) async fn trigger_lockdown(app_handle: AppHandle, action_generation: u
             camera_id,
             save_path.clone(),
             capture_delay_seconds,
-            capture_mode,
             action_generation,
         )
         .await
         {
             return;
         }
-    } else if !execute_capture_and_lock(
+    } else if !capture_photo(
         app_handle.clone(),
         camera_id,
         save_path.clone(),
-        post_trigger_action.clone(),
         action_generation,
     )
     .await
@@ -229,7 +123,7 @@ fn send_security_notification(app_handle: &AppHandle) {
     use tauri_plugin_notification::NotificationExt;
 
     let state = app_handle.state::<AppState>();
-    if !state.enable_notifications() {
+    if !state.config().enable_notifications {
         return;
     }
 
@@ -251,14 +145,9 @@ async fn await_delayed_capture(
     camera_id: u32,
     save_path: Option<String>,
     delay_seconds: u32,
-    capture_mode: crate::config::CaptureMode,
     action_generation: u64,
 ) -> bool {
-    log::info!(
-        "开始延迟拍摄，模式: {:?}, 延迟: {}秒",
-        capture_mode,
-        delay_seconds
-    );
+    log::info!("开始延迟拍摄，延迟: {}秒", delay_seconds);
 
     {
         let controller = app_handle.state::<MonitoringController>();
@@ -296,7 +185,7 @@ async fn await_delayed_capture(
             log::info!("延迟拍摄已取消，跳过旧流程的进程清理");
             return false;
         };
-        if let Err(error) = camera::stop_video_recording().await {
+        if let Err(error) = camera::stop_video_recording(app_handle.clone()).await {
             log::error!("清理录像进程失败: {}", error);
         }
     }
@@ -306,11 +195,10 @@ async fn await_delayed_capture(
         .await
 }
 
-async fn execute_capture_and_lock(
+async fn capture_photo(
     app_handle: AppHandle,
     camera_id: u32,
     save_path: Option<String>,
-    post_trigger_action: crate::config::PostTriggerAction,
     action_generation: u64,
 ) -> bool {
     let controller = app_handle.state::<MonitoringController>();
@@ -318,38 +206,10 @@ async fn execute_capture_and_lock(
         return false;
     };
 
-    if post_trigger_action == crate::config::PostTriggerAction::ScreenRecording {
-        if let Err(error) = crate::recorder::start_screen_recording(app_handle.clone()).await {
-            log::error!("启动屏幕录制失败: {}", error);
-            controller.report_capture_error(&app_handle, &error);
-        }
-        return true;
-    }
-
     if let Err(error) = camera::take_photo(camera_id, save_path).await {
         log::error!("拍照失败: {}", error);
         controller.report_capture_error(&app_handle, &error);
     }
 
     is_action_still_current(&app_handle, action_generation)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_ignore_input_event;
-
-    #[test]
-    fn ignores_event_while_shortcut_is_in_progress() {
-        assert!(should_ignore_input_event(true, false));
-    }
-
-    #[test]
-    fn ignores_event_inside_shortcut_window() {
-        assert!(should_ignore_input_event(false, true));
-    }
-
-    #[test]
-    fn does_not_ignore_normal_input() {
-        assert!(!should_ignore_input_event(false, false));
-    }
 }

@@ -9,7 +9,6 @@ mod handlers;
 mod logger;
 mod media_files;
 mod monitoring;
-mod monitoring_controller;
 mod process_utils;
 mod recorder;
 mod state;
@@ -17,7 +16,7 @@ mod state;
 #[cfg(target_os = "windows")]
 mod session_monitor;
 
-use crate::{monitoring_controller::MonitoringController, state::AppState};
+use crate::{monitoring::MonitoringController, state::AppState};
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
@@ -30,6 +29,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .manage(MonitoringController::new())
+        .manage(recorder::Recordings::default())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -39,7 +39,7 @@ fn main() {
             }
 
             // 加载配置
-            if let Err(error) = config::load_config(handle.clone()) {
+            if let Err(error) = config::initialize_config(handle.clone()) {
                 log::error!("应用配置加载失败: {}", error);
             } else {
                 log::info!("应用配置已加载");
@@ -103,37 +103,11 @@ fn main() {
             camera::check_camera_permission,
             camera::get_camera_preview,
             handlers::set_camera_id,
-            camera::set_save_path,
-            handlers::get_shortcut_key,
-            handlers::set_shortcut_key,
-            handlers::disable_shortcuts,
-            handlers::enable_shortcuts,
-            handlers::get_show_debug_logs,
-            handlers::set_show_debug_logs,
-            handlers::get_save_logs_to_file,
-            handlers::set_save_logs_to_file,
-            handlers::get_exit_on_lock,
-            handlers::set_exit_on_lock,
-            handlers::get_dark_mode,
-            handlers::set_dark_mode,
-            handlers::get_enable_notifications,
-            handlers::set_enable_notifications,
-            handlers::log_save_path_change,
-            config::save_config,
-            config::load_config,
-            config::save_dark_mode_setting,
+            handlers::set_shortcuts_disabled,
+            config::get_config,
+            config::update_config,
             logger::get_debug_logs,
             logger::clear_debug_logs,
-            logger::set_log_to_file,
-            logger::set_log_file_path,
-            handlers::get_post_trigger_action,
-            handlers::set_post_trigger_action,
-            handlers::get_default_camera_id,
-            handlers::set_default_camera_id,
-            handlers::get_capture_delay_seconds,
-            handlers::set_capture_delay_seconds,
-            handlers::get_capture_mode,
-            handlers::set_capture_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

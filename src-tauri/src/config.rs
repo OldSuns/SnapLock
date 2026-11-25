@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 const MAX_CAPTURE_DELAY_SECONDS: u32 = 60;
 
 /// 触发后动作选项
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PostTriggerAction {
     /// 拍摄并锁屏
     CaptureAndLock,
@@ -130,7 +130,7 @@ impl AppConfig {
         Ok(())
     }
 
-    fn sanitize(mut self) -> Self {
+    pub fn sanitize(mut self) -> Self {
         self.capture_delay_seconds = normalize_capture_delay(self.capture_delay_seconds);
         self
     }
@@ -189,6 +189,10 @@ impl AppConfig {
     /// 保存配置到文件
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = Self::get_config_path()?;
+        self.save_to(&config_path)
+    }
+
+    fn save_to(&self, config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let content = serde_json::to_string_pretty(&self.clone().sanitize())
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -199,54 +203,14 @@ impl AppConfig {
         Ok(())
     }
 
-    /// 从应用状态更新配置
-    pub fn update_from_state(&mut self, state: &crate::state::AppState) {
-        self.shortcut_key = state.shortcut_key();
-        self.save_path = state.save_path();
-        self.show_debug_logs = state.show_debug_logs();
-        self.save_logs_to_file = state.save_logs_to_file();
-        self.exit_on_lock = state.exit_on_lock();
-        self.dark_mode = state.dark_mode();
-        self.post_trigger_action = state.post_trigger_action();
-        self.enable_notifications = state.enable_notifications();
-        self.default_camera_id = state.default_camera_id();
-        self.capture_delay_seconds = normalize_capture_delay(state.capture_delay_seconds());
-        self.capture_mode = state.capture_mode();
+    pub fn effective_save_path(&self) -> String {
+        self.save_path.clone().unwrap_or_else(get_default_save_path)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[allow(dead_code)]
-    /// 将配置应用到应用状态
-    pub fn apply_to_state(&self, state: &crate::state::AppState) {
-        self.apply_to_state_with_runtime_camera(state, self.default_camera_id);
-    }
-
-    pub fn apply_to_state_with_runtime_camera(
-        &self,
-        state: &crate::state::AppState,
-        runtime_camera_id: Option<u32>,
-    ) {
-        state.set_shortcut_key(self.shortcut_key.clone());
-        state.set_save_path(self.save_path.clone());
-        state.set_show_debug_logs(self.show_debug_logs);
-        state.set_save_logs_to_file(self.save_logs_to_file);
-        state.set_exit_on_lock(self.exit_on_lock);
-        state.set_dark_mode(self.dark_mode);
-        state.set_post_trigger_action(self.post_trigger_action.clone());
-        state.set_enable_notifications(self.enable_notifications);
-        state.set_default_camera_id(self.default_camera_id);
-
-        if let Some(camera_id) = runtime_camera_id {
-            state.set_camera_id(camera_id);
-        }
-
-        state.set_capture_delay_seconds(normalize_capture_delay(self.capture_delay_seconds));
-        state.set_capture_mode(self.capture_mode.clone());
-
-        if self.save_logs_to_file {
-            if let Some(logger) = crate::logger::get_logger() {
-                logger.set_log_file_path(Some(state.get_effective_save_path()));
-            }
+    fn configure_logger(&self) {
+        if let Some(logger) = crate::logger::get_logger() {
+            logger.set_log_file_path(Some(self.effective_save_path()));
+            logger.set_log_to_file(self.save_logs_to_file);
         }
     }
 }
@@ -262,25 +226,23 @@ pub fn get_default_save_path() -> String {
     }
 }
 
-/// 自动保存配置的命令
-#[tauri::command]
 pub fn save_config(app_handle: AppHandle) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    let mut config = AppConfig::default();
-    config.update_from_state(&state);
-
-    config.save().map_err(|e| e.to_string())?;
-    Ok(())
+    app_handle
+        .state::<crate::state::AppState>()
+        .config()
+        .save()
+        .map_err(|e| e.to_string())
 }
 
-/// 加载配置的命令
-#[tauri::command]
-pub fn load_config(app_handle: AppHandle) -> Result<AppConfig, String> {
+pub fn initialize_config(app_handle: AppHandle) -> Result<(), String> {
     let loaded_config = AppConfig::load();
     let original_default_camera_id = loaded_config.default_camera_id;
     let (config, runtime_camera_id) = loaded_config.prepare_for_runtime();
     let state = app_handle.state::<crate::state::AppState>();
-    config.apply_to_state_with_runtime_camera(&state, runtime_camera_id);
+    if let Some(camera_id) = runtime_camera_id {
+        state.set_camera_id(camera_id);
+    }
+    config.configure_logger();
 
     if config.default_camera_id != original_default_camera_id {
         if let Err(error) = config.save() {
@@ -288,61 +250,195 @@ pub fn load_config(app_handle: AppHandle) -> Result<AppConfig, String> {
         }
     }
 
-    Ok(config)
-}
-
-/// 保存暗色模式设置的命令
-#[tauri::command]
-pub fn save_dark_mode_setting(app_handle: AppHandle, enabled: bool) -> Result<(), String> {
-    let state = app_handle.state::<crate::state::AppState>();
-    let previous = state.dark_mode();
-    state.set_dark_mode(enabled);
-
-    if let Err(error) = save_config(app_handle.clone()) {
-        state.set_dark_mode(previous);
-        return Err(format!("保存配置失败: {}", error));
-    }
-
-    log::info!("暗色模式设置已保存: {}", enabled);
+    *state.config.lock().unwrap() = config;
     Ok(())
 }
 
-pub fn apply_state_change<A, R>(
-    app_handle: &AppHandle,
-    apply: A,
-    rollback: R,
-) -> Result<(), String>
-where
-    A: FnOnce(&crate::state::AppState),
-    R: FnOnce(&crate::state::AppState),
-{
-    let state = app_handle.state::<crate::state::AppState>();
-    apply(&state);
+#[tauri::command]
+pub fn get_config(app_handle: AppHandle) -> AppConfig {
+    app_handle.state::<crate::state::AppState>().config()
+}
 
-    if let Err(error) = save_config(app_handle.clone()) {
-        rollback(&state);
-        return Err(format!("保存配置失败: {}", error));
+#[derive(Debug, Deserialize)]
+#[serde(tag = "key", content = "value", rename_all = "snake_case")]
+pub enum ConfigChange {
+    ShortcutKey(String),
+    SavePath(Option<String>),
+    ShowDebugLogs(bool),
+    SaveLogsToFile(bool),
+    DarkMode(bool),
+    ExitOnLock(bool),
+    EnableNotifications(bool),
+    PostTriggerAction(PostTriggerAction),
+    DefaultCameraId(Option<u32>),
+    CaptureDelaySeconds(u32),
+}
+
+impl ConfigChange {
+    fn apply(self, config: &mut AppConfig) -> Result<(), String> {
+        match self {
+            Self::ShortcutKey(value) => {
+                let parts: Vec<_> = value.split('+').collect();
+                let modifiers = ["Ctrl", "Alt", "Shift", "Meta", "Cmd"];
+                if parts.len() < 2
+                    || parts[..parts.len() - 1]
+                        .iter()
+                        .any(|part| !modifiers.contains(part))
+                    || parts
+                        .last()
+                        .is_none_or(|key| key.trim().is_empty() || modifiers.contains(key))
+                {
+                    return Err("无效的快捷键格式".into());
+                }
+                config.shortcut_key = value;
+            }
+            Self::SavePath(value) => config.save_path = value,
+            Self::ShowDebugLogs(value) => config.show_debug_logs = value,
+            Self::SaveLogsToFile(value) => config.save_logs_to_file = value,
+            Self::DarkMode(value) => config.dark_mode = value,
+            Self::ExitOnLock(value) => config.exit_on_lock = value,
+            Self::EnableNotifications(value) => config.enable_notifications = value,
+            Self::PostTriggerAction(value) => config.post_trigger_action = value,
+            Self::DefaultCameraId(value) => {
+                if let Some(id) = value {
+                    crate::camera::ensure_camera_available(id)?;
+                }
+                config.default_camera_id = value;
+            }
+            Self::CaptureDelaySeconds(value) => {
+                if value > MAX_CAPTURE_DELAY_SECONDS {
+                    return Err("拍摄延迟必须在 0 到 60 秒之间".into());
+                }
+                config.capture_delay_seconds = value;
+            }
+        }
+        Ok(())
     }
+}
 
+/// Serialize updates and publish only persisted values, including logger side effects.
+#[tauri::command]
+pub fn update_config(app_handle: AppHandle, change: ConfigChange) -> Result<AppConfig, String> {
+    let state = app_handle.state::<crate::state::AppState>();
+    let _update = state.settings_update.lock().unwrap();
+    let previous = state.config();
+    let mut next = previous.clone();
+    let camera_changed = matches!(change, ConfigChange::DefaultCameraId(_));
+    change.apply(&mut next)?;
+    let path = AppConfig::get_config_path().map_err(|error| format!("保存配置失败: {error}"))?;
+    let shortcut_changed = previous.shortcut_key != next.shortcut_key;
+    if shortcut_changed {
+        crate::app_setup::update_global_shortcut(
+            &app_handle,
+            &previous.shortcut_key,
+            &next.shortcut_key,
+        )
+        .map_err(|error| format!("快捷键注册失败: {error}"))?;
+    }
+    if let Err(error) = commit_config(&state, &next, &path) {
+        if shortcut_changed {
+            if let Err(rollback_error) = crate::app_setup::update_global_shortcut(
+                &app_handle,
+                &next.shortcut_key,
+                &previous.shortcut_key,
+            ) {
+                *state.config.lock().unwrap() = next;
+                return Err(format!(
+                    "保存配置失败，且回滚快捷键失败: {error}; {rollback_error}"
+                ));
+            }
+        }
+        return Err(format!("保存配置失败: {error}"));
+    }
+    next.configure_logger();
+    if camera_changed {
+        if let Some(id) = next.default_camera_id {
+            state.set_camera_id(id);
+        }
+    }
+    log::info!("Settings updated");
+    Ok(next)
+}
+
+fn commit_config(
+    state: &crate::state::AppState,
+    next: &AppConfig,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    next.save_to(path)?;
+    *state.config.lock().unwrap() = next.clone();
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, CaptureMode, PostTriggerAction};
+    use super::{AppConfig, CaptureMode, ConfigChange, PostTriggerAction, commit_config};
     use crate::state::AppState;
+    use std::path::Path;
+
+    #[test]
+    fn config_updates_publish_only_after_real_storage_succeeds() {
+        let directory =
+            crate::media_files::capture_path(Path::new(r"D:\Temp\Pi"), "snaplock-config-", "test");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.json");
+        let state = AppState::new(7);
+        let mut next = state.config();
+        ConfigChange::DarkMode(true).apply(&mut next).unwrap();
+        commit_config(&state, &next, &path).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        let restored: AppConfig = serde_json::from_slice(&saved).unwrap();
+        assert!(restored.dark_mode && state.config().dark_mode);
+        next.dark_mode = false;
+        // The existing config file is a real invalid directory, not a mocked failure.
+        assert!(commit_config(&state, &next, &path.join("config.json")).is_err());
+        assert!(state.config().dark_mode);
+        assert_eq!(std::fs::read(path).unwrap(), saved);
+        assert_eq!(state.camera_id(), 7);
+    }
+
+    #[test]
+    fn nullable_settings_and_invalid_changes_preserve_the_config_contract() {
+        let mut config = AppConfig {
+            default_camera_id: Some(7),
+            ..AppConfig::default()
+        };
+        let change: ConfigChange =
+            serde_json::from_str(r#"{"key":"default_camera_id","value":null}"#).unwrap();
+        change.apply(&mut config).unwrap();
+        assert_eq!(config.default_camera_id, None);
+        for change in [
+            ConfigChange::CaptureDelaySeconds(61),
+            ConfigChange::ShortcutKey("Alt".into()),
+        ] {
+            assert!(change.apply(&mut config).is_err());
+        }
+        assert_eq!(config.capture_delay_seconds, 0);
+        assert_eq!(config.shortcut_key, "Alt+L");
+    }
+
+    #[test]
+    fn older_configs_keep_defaults_for_newer_fields() {
+        let config: AppConfig = serde_json::from_str(r#"{"shortcut_key":"Alt+L","save_path":null,"show_debug_logs":false,"save_logs_to_file":false,"dark_mode":false,"exit_on_lock":false}"#).unwrap();
+        assert!(config.enable_notifications);
+        assert_eq!(
+            config.post_trigger_action,
+            PostTriggerAction::CaptureAndLock
+        );
+        assert_eq!(config.capture_delay_seconds, 0);
+        assert_eq!(config.capture_mode, CaptureMode::Video);
+    }
 
     #[test]
     fn config_roundtrip_preserves_security_related_fields() {
-        let state = AppState::new(7);
-        state.set_save_path(Some("D:/captures".to_string()));
-        state.set_post_trigger_action(PostTriggerAction::ScreenRecording);
-        state.set_default_camera_id(Some(42));
-        state.set_capture_delay_seconds(15);
-        state.set_capture_mode(CaptureMode::Video);
-
-        let mut config = AppConfig::default();
-        config.update_from_state(&state);
+        let config = AppConfig {
+            save_path: Some("D:/captures".into()),
+            post_trigger_action: PostTriggerAction::ScreenRecording,
+            default_camera_id: Some(42),
+            capture_delay_seconds: 15,
+            capture_mode: CaptureMode::Video,
+            ..AppConfig::default()
+        };
 
         assert_eq!(config.save_path.as_deref(), Some("D:/captures"));
         assert_eq!(
@@ -352,16 +448,15 @@ mod tests {
         assert_eq!(config.default_camera_id, Some(42));
         assert_eq!(config.capture_delay_seconds, 15);
 
-        let restored_state = AppState::new(0);
-        config.apply_to_state(&restored_state);
-
-        assert_eq!(restored_state.save_path().as_deref(), Some("D:/captures"));
+        let restored: AppConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.save_path.as_deref(), Some("D:/captures"));
         assert_eq!(
-            restored_state.post_trigger_action(),
+            restored.post_trigger_action,
             PostTriggerAction::ScreenRecording
         );
-        assert_eq!(restored_state.default_camera_id(), Some(42));
-        assert_eq!(restored_state.camera_id(), 42);
+        assert_eq!(restored.default_camera_id, Some(42));
+        assert_eq!(restored.capture_delay_seconds, 15);
     }
 
     #[test]

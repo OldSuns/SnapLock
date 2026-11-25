@@ -1,7 +1,7 @@
 /* 应用主要布局样式 */
 .app-container {
   height: 100vh;
-  background: var(--bg-primary) !important;
+  background: var(--bg-primary);
   display: flex;
   flex-direction: column;
   padding: 1rem;
@@ -112,7 +112,8 @@
   transition: transform 0.2s ease;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   box-sizing: border-box;
   min-height: 0;
   flex: 1;
@@ -147,3 +148,21 @@
   font-size: 1rem;
   opacity: 0.8;
 }
+
+.monitoring-error,
+.form-error {
+  color: #b42318;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+
+.monitoring-error {
+  max-height: 5rem;
+  overflow-y: auto;
+  flex-shrink: 0;
+  margin: 0 0 0.5rem;
+}
+
+:root.dark-mode .monitoring-error,
+:root.dark-mode .form-error { color: #ff9999; }

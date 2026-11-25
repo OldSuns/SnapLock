@@ -201,17 +201,3 @@ pub fn clear_debug_logs() {
         logger.clear_logs();
     }
 }
-
-#[tauri::command]
-pub fn set_log_to_file(enabled: bool) {
-    if let Some(logger) = get_logger() {
-        logger.set_log_to_file(enabled);
-    }
-}
-
-#[tauri::command]
-pub fn set_log_file_path(path: String) {
-    if let Some(logger) = get_logger() {
-        logger.set_log_file_path(Some(path));
-    }
-}

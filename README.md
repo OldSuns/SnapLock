@@ -1,184 +1,84 @@
 # SnapLock
 
-**一个智能的安全工具，当您离开时，若有活动则自动拍照并锁屏。**
+Windows 活动监控工具：检测键盘或鼠标输入后，按设置拍摄、锁屏或录制屏幕。基于 Rust、Tauri 2、Vue 3 和 TypeScript，照片、录像与日志保存在本地。
 
-[![构建状态](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
-[![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![最新版本](https://img.shields.io/github/v/release/OldSuns/snaplock)](https://github.com/OldSuns/snaplock/releases)
 
----
+<img width="1090" height="1020" alt="SnapLock 界面" src="https://github.com/user-attachments/assets/92cceb36-7db3-4a70-94f8-f72d32af086b" />
 
-<img width="1090" height="1020" alt="image" src="https://github.com/user-attachments/assets/92cceb36-7db3-4a70-94f8-f72d32af086b" />
+## 使用
 
-## 项目简介
+1. 从 [Releases](https://github.com/OldSuns/snaplock/releases) 下载 Windows 安装包。
+2. 打开设置，选择触发后动作。使用摄像头拍摄时，选择摄像头并通过预览确认权限与画面。
+3. 点击“启动监控”或按默认快捷键 `Alt+L`。准备 2 秒后进入警戒状态，主窗口自动隐藏。
+4. 使用同一快捷键或托盘菜单停止监控；点击托盘图标可重新显示窗口。关闭主窗口会隐藏到托盘，退出程序请使用托盘菜单。
 
-SnapLock 是一款智能安全工具，当您离开电脑时，若检测到活动，它会自动拍照并锁定屏幕。该工具采用现代化技术栈构建，前端使用 Vue 3，后端采用 Rust 与 Tauri，为物理计算机安全提供了轻量高效的解决方案。
+| 触发后动作 | 行为 |
+| --- | --- |
+| 拍摄并锁屏 | 摄像头拍摄完成后锁定 Windows |
+| 仅拍摄 | 保存照片或摄像头录像，随后停止监控 |
+| 屏幕录制 | 输入活动触发录屏；无输入超过 20 秒时结束当前录像，再次活动时继续录制，无需摄像头 |
 
-SnapLock 解决了一个常见的安全问题：当您需要短暂离开电脑，但又不想使用系统锁屏，同时又担心有人趁您不在时访问您的电脑，这时该怎么办？该应用程序通过在后台静默运行来解决这一问题，并能立即响应任何键盘或鼠标活动，采取两项安全措施：通过您选定的摄像头拍照并锁定计算机屏幕。
+Windows 解锁后，应用会停止监控并清理录制进程。
 
-该应用程序利用 Rust 的性能和 Tauri 的轻量架构确保对系统资源的影响最小化，同时提供强大的安全监控功能。
+## 设置与文件
 
-## 主要功能
-SnapLock 提供多项核心功能，使其既强大又用户友好：
+- **拍摄时长**：设置为 0 秒时拍照，1–60 秒时录制对应时长的摄像头视频；此设置不影响屏幕录制。
+- **保存目录**：默认为桌面，可在设置中更改。启用文件日志后，日志保存在同一目录；照片与录像使用唯一文件名并禁止覆盖。
+- **快捷键**：默认 `Alt+L`，可自定义。启动时若快捷键被占用，会尝试备用组合。
+- **其他选项**：默认摄像头、明暗主题、系统通知、触发后退出，以及实时日志显示和文件保存。
 
-1. **智能监控**：经过 2 秒的准备期后，SnapLock 进入主动监控模式，随时准备检测任何输入活动。
-2. **活动触发响应**：任何键盘或鼠标事件都会立即触发安全响应，确保未经授权的访问不会被忽视。
-3. **即时拍照**：在锁定屏幕前，SnapLock 通过您选定的摄像头拍摄照片，为事件创建视觉记录。
-4. **多种触发后动作**：支持三种模式 - 拍摄并锁屏、仅拍摄、屏幕录制，满足不同场景需求。
-5. **全局热键**：在系统任何位置使用 Alt+L（可自定义）快速启动或停止监控。
-6. **系统托盘操作**：应用程序在后台运行，并显示系统托盘图标，允许隐藏主界面而不影响您的工作流程。
-7. **高度可配置**：可选择多个摄像头，并为拍摄的照片设置自定义保存路径。
-8. **会话状态监控**：智能检测 Windows 系统锁定/解锁状态，在系统解锁时自动重置应用状态。
-9. **屏幕录制功能**：使用 FFmpeg 进行高质量屏幕录制，支持自动进程管理和 Job Object 技术。
-10. **暗色模式**：支持明暗主题切换，提供舒适的视觉体验。
-11. **系统通知**：可选的系统通知功能，在关键事件发生时及时提醒用户。
-12. **调试日志系统**：完整的日志记录功能，支持实时显示和文件保存，便于问题诊断。
-13. **轻量高效**：基于 Rust 和 Tauri 构建，确保资源使用最少，同时保持高性能。
+设置即时保存到 `%APPDATA%\SnapLock\snaplock_config.json`，兼容旧配置。保存失败时保留原值并显示错误。
 
-## SnapLock 如何工作
-SnapLock 通过简化的工作流程运行，旨在以最少的用户努力实现最大安全性：
+屏幕录像初始化失败或录制进程意外退出时，应用会停止监控并显示错误。停止录像会先请求 FFmpeg 完成文件写入，超时后强制终止；异常终止的录像可能不完整。
 
-1. **配置阶段：**
-   - 用户在主界面的下拉列表中选择首选摄像头。
-   - 可选择设置自定义文件夹保存拍摄的照片（默认为桌面）。
-   - 配置触发后动作：拍摄并锁屏、仅拍摄、或屏幕录制。
-   - 设置其他选项：暗色模式、系统通知、调试日志等。
+## 开发
 
-2. **准备阶段：**
-   - 用户按下全局热键 Alt+L（可自定义）或点击"开始监控"按钮。
-   - 应用程序状态变为"准备中"，提供 2 秒缓冲时间以防止意外触发。
+需要 Windows、[Node.js](https://nodejs.org/)、[pnpm](https://pnpm.io/)、[Rust](https://www.rust-lang.org/tools/install) MSVC 工具链、C++ Build Tools 和 WebView2，安装步骤见 [Tauri 环境准备](https://v2.tauri.app/start/prerequisites/)。项目已包含 FFmpeg。
 
-3. **主动监控阶段：**
-   - 准备期结束后，SnapLock 进入"活跃"状态，主窗口自动隐藏。
-   - 应用程序静默监控所有系统范围的键盘和鼠标输入事件。
-   - 会话监控器检测系统锁定/解锁状态。
-
-4. **触发与行动阶段：**
-   - 检测到任何键盘或鼠标活动时：
-   - **拍照**：立即通过选定的摄像头拍摄照片并保存到指定路径。
-   - **执行选定动作**：
-     - 拍摄并锁屏：锁定计算机屏幕
-     - 仅拍摄：仅保存照片，不锁定屏幕
-     - 屏幕录制：开始录制屏幕活动，直到用户停止
-   - **系统通知**：如果启用，显示相关通知
-   - **状态重置**：系统解锁时自动重置应用状态
-
-## 技术架构
-SnapLock 采用现代化混合架构构建，结合了 Web 技术的用户界面优势和系统编程的性能优势：
-
-### 前端（Vue 3 + TypeScript）
-用户界面使用 Vue 3 和 TypeScript 构建，提供响应式且直观的体验。前端负责：
-
-- 用户交互和配置管理
-- 显示应用程序状态和摄像头预览
-- 处理设置和偏好
-- 为所有操作提供视觉反馈
-前端通过 Tauri 的调用系统与后端通信，实现 Web 界面与原生功能的无缝集成。
-
-### 后端（Rust + Tauri）
-后端使用 Rust 构建，并采用 Tauri 框架创建轻量、安全且高性能的原生应用程序。Rust 后端处理：
-
-- **输入监控**：使用 rdev crate 进行系统级键盘和鼠标事件监控
-- **摄像头控制**：通过 nokhwa crate 实现摄像头选择、预览和拍照功能
-- **屏幕录制**：集成 FFmpeg 进行高质量屏幕录制，支持 Job Object 进程管理
-- **会话监控**：检测 Windows 系统锁定/解锁状态，智能状态管理
-- **系统操作**：屏幕锁定、通知显示、系统托盘集成
-- **配置管理**：JSON 配置文件持久化，支持多种用户设置
-- **全局热键**：使用 tauri-plugin-global-shortcut 实现系统级快捷键
-- **状态管理**：基于状态机的应用状态管理，确保状态转换的正确性
-- **日志系统**：完整的日志记录和调试功能，支持文件保存和实时显示
-- **主题支持**：暗色模式支持，提供舒适的视觉体验
-
-监控生命周期统一由 `src-tauri/src/monitoring_controller.rs` 中的 `MonitoringController` 管理。界面、托盘、快捷键、系统解锁和输入监听故障共用状态转换与停止清理逻辑。每轮监控拥有独立的轮次标记；取消后重新启动时，旧准备任务不会提前激活新一轮监控，旧触发任务也不会清理新一轮的录制进程。停止监控会取消准备任务并唤醒仍在等待的延迟触发任务。
-
-摄像头和屏幕录像停止时，会先请求 FFmpeg 正常退出，写完录像文件后再完成清理；超过 5 秒仍未退出时强制终止，并记录警告。异常终止的录像文件可能不完整。
-
-Windows 锁定与解锁由当前会话的系统通知驱动，普通窗口切换、托盘菜单和窗口标题不会影响监控状态。屏幕录像可独立使用，无需摄像头；拍照和摄像头录像仍会校验设备及权限。
-
-录像启动需在 10 秒内收到 FFmpeg 首帧进度。初始化失败会显示具体错误；屏幕录像初始化失败或运行中意外退出时，会停止本轮监控并重新显示主窗口。照片采用独占创建，录像禁止覆盖，文件名包含高精度时间和唯一序号，避免快速重复拍摄时覆盖已有文件。
-
-## SnapLock 入门指南
-SnapLock 设计为即装即用，设置简单：
-
-- **安装**：从 GitHub Releases 页面下载最新安装程序。
-- **配置**：
-  - 启动 SnapLock 并从下拉列表中选择首选摄像头
-  - 选择触发后动作：拍摄并锁屏、仅拍摄、或屏幕录制
-  - 设置照片和日志保存路径
-  - 配置其他选项：暗色模式、系统通知、调试日志等
-- **使用**：
-  - 当您需要离开电脑时，按下全局热键（默认：Alt+L）
-  - 应用程序提供 2 秒准备时间，然后进入主动监控模式
-  - 如果有人在您离开时尝试使用您的电脑，SnapLock 会根据设置执行相应动作
-  - 系统解锁时应用状态会自动重置，无需手动干预
-
-## 安全考虑
-SnapLock 将安全性作为首要考虑因素：
-
-- **本地运行**：所有处理都在您的本地机器上完成 - 不会向外部服务器发送任何数据。
-- **最小权限**：应用程序仅请求摄像头访问和系统监控的必要权限。
-- **透明操作**：用户可以通过状态指示器和系统托盘图标完全了解监控何时处于活动状态。
-
-SnapLock 代表了一种深思熟虑的物理计算机安全方法，在强大保护与用户便利性和系统效率之间取得了平衡。
-
-## 开发与贡献
-
-我们欢迎任何形式的贡献！
-
-### 环境准备
-
-*   [Node.js](https://nodejs.org/) 和 [pnpm](https://pnpm.io/)
-*   [Rust](https://www.rust-lang.org/tools/install) 环境
-
-### 运行开发环境
-
-```bash
-# 1. 克隆仓库
+```powershell
 git clone https://github.com/OldSuns/snaplock.git
 cd snaplock
-
-# 2. 安装前端依赖
-pnpm install
-
-# 3. 启动开发服务器
-pnpm tauri dev
+pnpm.cmd install --frozen-lockfile
+pnpm.cmd tauri dev
 ```
 
-### 构建 Release 安装包
+### 检查与测试
 
-```bash
-# 1. 安装依赖
-pnpm install
-
-# 2. 检查 Rust 后端
-cargo check --manifest-path src-tauri/Cargo.toml
-
-# 3. 构建前端静态资源
-pnpm build
-
-# 4. 生成正式安装包和目录版
-pnpm tauri build
-```
-
-当前仓库的 Tauri bundle target 为 `nsis` 和 `app`，默认产物位置为：
-
-- `src-tauri/target/release/bundle/nsis/`
-- `src-tauri/target/release/bundle/app/`
-
-### 后端测试
-
-```bash
+```powershell
+pnpm.cmd build
 cargo test --locked --manifest-path src-tauri/Cargo.toml --bin SnapLock
 ```
 
-Windows 上的录像回归测试使用项目自带的 FFmpeg 和生成画面，验证首帧确认、初始化错误、意外退出、文件防覆盖、提前停止后的 MKV 时长、完整解码及超时强制终止。设备校验测试使用无效摄像头 ID，确认屏幕录像可独立启动、摄像头模式仍拒绝无效设备。测试产物保存在 `D:\Temp\Pi\snaplock-*`，运行前需确保 `D:\Temp\Pi` 已存在。会话消息过滤测试验证只有锁定和解锁通知影响状态；这些自动测试不覆盖真实系统锁屏和解锁。
+`pnpm.cmd build` 执行前端类型检查和构建。Rust 测试覆盖配置校验与持久化、监控状态与任务取消、会话消息过滤，以及 FFmpeg 启动、停止、异常退出、防覆盖和完整解码。
 
-如果您有任何建议或发现 Bug，请随时提交 [Issues](https://github.com/OldSuns/snaplock/issues) 或 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
+测试前需创建 `D:\Temp\Pi`，测试产物保存在其下的 `snaplock-*` 路径。自动测试不覆盖真实系统锁屏与解锁，摄像头预览、拍摄和实际输入触发需另行实机验证。
+
+### 构建安装包
+
+```powershell
+pnpm.cmd tauri build
+```
+
+该命令会自动构建前端，Windows 安装包输出到 `src-tauri/target/release/bundle/nsis/`。目录运行时需保留可执行文件旁的 `libs/ffmpeg` 资源。
+
+### 代码结构
+
+| 位置 | 职责 |
+| --- | --- |
+| [src/components/](src/components/) 与 [src/composables/](src/composables/) | 设置、摄像头预览、日志界面与前端状态；`App.vue` 组合主窗口 |
+| [config.rs](src-tauri/src/config.rs) 与 [state.rs](src-tauri/src/state.rs) | 配置校验、保存与运行状态 |
+| [monitoring/](src-tauri/src/monitoring/) | 监控生命周期、输入监听与触发动作，统一处理取消和清理 |
+| [camera.rs](src-tauri/src/camera.rs)、[recorder.rs](src-tauri/src/recorder.rs) 与 [process_utils.rs](src-tauri/src/process_utils.rs) | 摄像头操作、录像进程管理、启动确认与停止清理 |
+| [session_monitor.rs](src-tauri/src/session_monitor.rs) | 当前 Windows 会话的锁定与解锁通知 |
+
+问题反馈请提交 [Issues](https://github.com/OldSuns/snaplock/issues)，代码贡献请提交 [Pull Requests](https://github.com/OldSuns/snaplock/pulls)。
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=OldSuns/SnapLock&type=Date)](https://www.star-history.com/#OldSuns/SnapLock&Date)
 
-## 📄 许可证
+## 许可证
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目采用 [MIT License](LICENSE)。

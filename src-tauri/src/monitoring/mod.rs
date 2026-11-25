@@ -1,3 +1,6 @@
+mod actions;
+mod input;
+
 use crate::{
     camera,
     config::PostTriggerAction,
@@ -5,7 +8,6 @@ use crate::{
         EVENT_IGNORE_WINDOW_MS, PREPARATION_DELAY, SHORTCUT_DEBOUNCE_TIME,
         SHORTCUT_FLAG_CLEAR_DELAY,
     },
-    monitoring,
     state::{AppState, MonitoringFlags, MonitoringState},
 };
 use rdev::Event;
@@ -139,12 +141,12 @@ impl MonitoringController {
         }
 
         validate_capture_device(
-            app_handle.state::<AppState>().post_trigger_action(),
+            app_handle.state::<AppState>().config().post_trigger_action,
             camera_id,
         )
         .await?;
 
-        monitoring::ensure_listener_started(app_handle.clone(), self.session.flags.clone())?;
+        input::ensure_listener_started(app_handle.clone(), self.session.flags.clone())?;
         if !self.session.flags.listener_ready() {
             return Err(self
                 .session
@@ -177,14 +179,14 @@ impl MonitoringController {
                 log::error!("无法进入警戒状态: {}", error);
                 // This task is completing itself; only stop other helper tasks here.
                 self.session.cancel();
-                Self::cleanup_capture_processes().await;
+                Self::cleanup_capture_processes(app_handle).await;
                 self.emit_status(app_handle);
                 return;
             }
             Ok(true) => {}
         }
 
-        if app_handle.state::<AppState>().post_trigger_action()
+        if app_handle.state::<AppState>().config().post_trigger_action
             == PostTriggerAction::ScreenRecording
         {
             self.session.flags.set_last_activity_time(0);
@@ -219,7 +221,7 @@ impl MonitoringController {
     async fn stop_locked(&self, app_handle: &AppHandle) {
         self.session.cancel();
         self.cancel_preparation_task().await;
-        Self::cleanup_capture_processes().await;
+        Self::cleanup_capture_processes(app_handle).await;
         self.emit_status(app_handle);
         log::info!("已执行监控停止与后台进程清理");
     }
@@ -321,7 +323,7 @@ impl MonitoringController {
             return;
         }
         let now = Self::now_millis();
-        if monitoring::should_ignore_input_event(
+        if input::should_ignore_input_event(
             flags.shortcut_in_progress(),
             now.saturating_sub(flags.last_shortcut_time()) < EVENT_IGNORE_WINDOW_MS,
         ) {
@@ -329,11 +331,16 @@ impl MonitoringController {
         }
         flags.set_last_activity_time(now);
 
-        let recording = app_handle.state::<AppState>().post_trigger_action()
+        let recording = app_handle.state::<AppState>().config().post_trigger_action
             == PostTriggerAction::ScreenRecording;
         if recording
-            && (crate::recorder::is_screen_recording_running()
-                || crate::recorder::screen_recording_retry_remaining_ms().is_some())
+            && (app_handle
+                .state::<crate::recorder::Recordings>()
+                .screen_active()
+                || app_handle
+                    .state::<crate::recorder::Recordings>()
+                    .screen_retry_remaining()
+                    .is_some())
         {
             return;
         }
@@ -348,11 +355,8 @@ impl MonitoringController {
                         .session
                         .is_current(generation, MonitoringState::Active)
                     {
-                        if let Err(error) = crate::recorder::start_screen_recording_with_options(
-                            handle.clone(),
-                            false,
-                        )
-                        .await
+                        if let Err(error) =
+                            crate::recorder::start_screen_recording(handle.clone()).await
                         {
                             log::error!("启动屏幕录制失败: {}", error);
                             controller.stop_locked(&handle).await;
@@ -367,7 +371,7 @@ impl MonitoringController {
                 log::info!("✓ 触发锁定！事件类型: {:?}", event.event_type);
                 controller.emit_status(&handle);
             }
-            monitoring::trigger_lockdown(handle.clone(), generation).await;
+            actions::trigger_lockdown(handle.clone(), generation).await;
         });
     }
 
@@ -388,46 +392,38 @@ impl MonitoringController {
                     continue;
                 }
                 let idle_ms = Self::now_millis().saturating_sub(last_activity);
-                let recording = match crate::recorder::check_screen_recording() {
-                    Ok(recording) => recording,
-                    Err(error) => {
-                        // This idle task must not abort itself before cleanup completes.
-                        controller
-                            .session
-                            .flags
-                            .idle_check_handle
-                            .lock()
-                            .unwrap()
-                            .take();
-                        controller.stop_locked(&app_handle).await;
-                        controller.report_capture_error(&app_handle, &error);
-                        break;
-                    }
-                };
-                if idle_ms > 20_000 && recording {
-                    crate::recorder::stop_screen_recording().await;
-                } else if idle_ms <= 20_000
-                    && !recording
-                    && crate::recorder::screen_recording_retry_remaining_ms().is_none()
+                let result = match app_handle
+                    .state::<crate::recorder::Recordings>()
+                    .check_screen()
                 {
-                    if let Err(error) = crate::recorder::start_screen_recording_with_options(
-                        app_handle.clone(),
-                        false,
-                    )
-                    .await
-                    {
-                        log::error!("无法恢复屏幕录制: {}", error);
-                        controller
-                            .session
-                            .flags
-                            .idle_check_handle
-                            .lock()
-                            .unwrap()
-                            .take();
-                        controller.stop_locked(&app_handle).await;
-                        controller.report_capture_error(&app_handle, &error);
-                        break;
+                    Ok(true) if idle_ms > 20_000 => {
+                        crate::recorder::stop_screen_recording(app_handle.clone()).await;
+                        Ok(())
                     }
+                    Ok(false)
+                        if idle_ms <= 20_000
+                            && app_handle
+                                .state::<crate::recorder::Recordings>()
+                                .screen_retry_remaining()
+                                .is_none() =>
+                    {
+                        crate::recorder::start_screen_recording(app_handle.clone()).await
+                    }
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    // Detach this task before stop aborts helper tasks.
+                    controller
+                        .session
+                        .flags
+                        .idle_check_handle
+                        .lock()
+                        .unwrap()
+                        .take();
+                    controller.stop_locked(&app_handle).await;
+                    controller.report_capture_error(&app_handle, &error);
+                    break;
                 }
             }
         })
@@ -451,10 +447,16 @@ impl MonitoringController {
         }
     }
 
-    async fn cleanup_capture_processes() {
-        crate::recorder::stop_screen_recording().await;
-        if let Err(error) = camera::stop_video_recording().await {
-            log::error!("停止摄像头录像失败: {}", error);
+    async fn cleanup_capture_processes(app_handle: &AppHandle) {
+        let app_handle = app_handle.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            app_handle
+                .state::<crate::recorder::Recordings>()
+                .stop_matching(|_| true);
+        })
+        .await
+        {
+            log::error!("Recording cleanup failed: {error}");
         }
     }
 
@@ -482,7 +484,7 @@ impl MonitoringController {
     }
 
     fn show_notification(&self, app_handle: &AppHandle, body: &str) {
-        if app_handle.state::<AppState>().enable_notifications() {
+        if app_handle.state::<AppState>().config().enable_notifications {
             if let Err(error) = app_handle
                 .notification()
                 .builder()

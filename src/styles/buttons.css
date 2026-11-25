@@ -68,7 +68,7 @@
   transform: translateY(0);
 }
 
-.main-action-button.disabled {
+.main-action-button:disabled {
   background: var(--bg-secondary);
   color: var(--text-tertiary);
   border-color: var(--border-primary);
@@ -77,7 +77,7 @@
   box-shadow: 0 1px 3px var(--shadow-light);
 }
 
-.main-action-button.disabled:hover {
+.main-action-button:disabled:hover {
   transform: none;
   background: var(--bg-secondary);
   border-color: var(--border-primary);
@@ -98,8 +98,8 @@
   color: var(--text-primary);
 }
 
-.main-action-button.disabled .button-icon,
-.main-action-button.disabled .button-text {
+.main-action-button:disabled .button-icon,
+.main-action-button:disabled .button-text {
   color: var(--text-tertiary);
 }
 

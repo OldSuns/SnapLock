@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_NCDESTROY, WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
 
-use crate::monitoring_controller::MonitoringController;
+use crate::monitoring::MonitoringController;
 
 const SESSION_SUBCLASS_ID: usize = 1;
 

@@ -1,5 +1,6 @@
-use crate::config::{CaptureMode, PostTriggerAction};
+use crate::config::AppConfig;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::task::JoinHandle;
 
 /// Represents the monitoring status of the application.
@@ -24,178 +25,49 @@ impl MonitoringState {
         match (self, next_state) {
             (MonitoringState::Idle, MonitoringState::Preparing) => Ok(next_state),
             (MonitoringState::Preparing, MonitoringState::Active) => Ok(next_state),
-            (MonitoringState::Preparing, MonitoringState::Idle) => Ok(next_state),
             (MonitoringState::Active, MonitoringState::Triggered) => Ok(next_state),
-            (MonitoringState::Active, MonitoringState::Idle) => Ok(next_state),
-            (MonitoringState::Triggered, MonitoringState::Idle) => Ok(next_state),
             (_, MonitoringState::Idle) => Ok(next_state),
             _ => Err("Invalid state transition"),
         }
     }
 }
 
-/// Holds the shared state of the Tauri application.
+/// Persisted configuration has one owner; transient controls are independent.
 pub struct AppState {
-    /// The ID of the camera to be used for capturing photos.
-    pub(crate) camera_id: Mutex<u32>,
-    /// The persisted default camera selection.
-    pub(crate) default_camera_id: Mutex<Option<u32>>,
-    /// The custom path to save photos, protected by a Mutex.
-    pub(crate) save_path: Mutex<Option<String>>,
-    /// The custom shortcut key combination, protected by a Mutex.
-    pub(crate) shortcut_key: Mutex<String>,
-    /// Flag to temporarily disable global shortcuts (e.g., during shortcut configuration)
-    pub(crate) shortcuts_disabled: Mutex<bool>,
-    /// Flag to show debug logs in the UI
-    pub(crate) show_debug_logs: Mutex<bool>,
-    /// Flag to save logs to file
-    pub(crate) save_logs_to_file: Mutex<bool>,
-    /// Flag to exit application when system is locked
-    pub(crate) exit_on_lock: Mutex<bool>,
-    /// Flag for dark mode theme
-    pub(crate) dark_mode: Mutex<bool>,
-    /// Flag to enable/disable system notifications
-    pub(crate) enable_notifications: Mutex<bool>,
-    /// Post trigger action setting
-    pub(crate) post_trigger_action: Mutex<PostTriggerAction>,
-    /// Capture delay in seconds
-    pub(crate) capture_delay_seconds: Mutex<u32>,
-    /// Capture mode setting
-    pub(crate) capture_mode: Mutex<CaptureMode>,
+    pub(crate) config: Mutex<AppConfig>,
+    pub(crate) settings_update: Mutex<()>,
+    camera_id: AtomicU32,
+    shortcuts_disabled: AtomicBool,
 }
 
 impl AppState {
     pub fn new(camera_id: u32) -> Self {
         Self {
-            camera_id: Mutex::new(camera_id),
-            default_camera_id: Mutex::new(None),
-            save_path: Mutex::new(None),
-            shortcut_key: Mutex::new("Alt+L".to_string()),
-            shortcuts_disabled: Mutex::new(false),
-            show_debug_logs: Mutex::new(false),
-            save_logs_to_file: Mutex::new(false),
-            exit_on_lock: Mutex::new(false),
-            dark_mode: Mutex::new(false),
-            enable_notifications: Mutex::new(true),
-            post_trigger_action: Mutex::new(PostTriggerAction::CaptureAndLock),
-            capture_delay_seconds: Mutex::new(0),
-            capture_mode: Mutex::new(CaptureMode::Video),
+            config: Mutex::new(AppConfig::default()),
+            settings_update: Mutex::new(()),
+            camera_id: AtomicU32::new(camera_id),
+            shortcuts_disabled: AtomicBool::new(false),
         }
     }
 
     pub fn camera_id(&self) -> u32 {
-        *self.camera_id.lock().unwrap()
+        self.camera_id.load(Ordering::SeqCst)
     }
 
     pub fn set_camera_id(&self, id: u32) {
-        *self.camera_id.lock().unwrap() = id;
+        self.camera_id.store(id, Ordering::SeqCst);
     }
 
-    pub fn default_camera_id(&self) -> Option<u32> {
-        *self.default_camera_id.lock().unwrap()
-    }
-
-    pub fn set_default_camera_id(&self, camera_id: Option<u32>) {
-        *self.default_camera_id.lock().unwrap() = camera_id;
-    }
-
-    pub fn save_path(&self) -> Option<String> {
-        self.save_path.lock().unwrap().clone()
-    }
-
-    /// 获取有效的保存路径，如果配置中没有设置则返回默认桌面路径
-    pub fn get_effective_save_path(&self) -> String {
-        match self.save_path.lock().unwrap().clone() {
-            Some(path) => path,
-            None => crate::config::get_default_save_path(),
-        }
-    }
-
-    pub fn set_save_path(&self, path: Option<String>) {
-        *self.save_path.lock().unwrap() = path;
-    }
-
-    pub fn shortcut_key(&self) -> String {
-        self.shortcut_key.lock().unwrap().clone()
-    }
-
-    pub fn set_shortcut_key(&self, key: String) {
-        *self.shortcut_key.lock().unwrap() = key;
+    pub fn config(&self) -> AppConfig {
+        self.config.lock().unwrap().clone()
     }
 
     pub fn shortcuts_disabled(&self) -> bool {
-        *self.shortcuts_disabled.lock().unwrap()
+        self.shortcuts_disabled.load(Ordering::SeqCst)
     }
 
     pub fn set_shortcuts_disabled(&self, disabled: bool) {
-        *self.shortcuts_disabled.lock().unwrap() = disabled;
-    }
-
-    pub fn show_debug_logs(&self) -> bool {
-        *self.show_debug_logs.lock().unwrap()
-    }
-
-    pub fn set_show_debug_logs(&self, show: bool) {
-        *self.show_debug_logs.lock().unwrap() = show;
-    }
-
-    pub fn save_logs_to_file(&self) -> bool {
-        *self.save_logs_to_file.lock().unwrap()
-    }
-
-    pub fn set_save_logs_to_file(&self, save: bool) {
-        *self.save_logs_to_file.lock().unwrap() = save;
-        if let Some(logger) = crate::logger::get_logger() {
-            logger.set_log_to_file(save);
-        }
-    }
-
-    pub fn exit_on_lock(&self) -> bool {
-        *self.exit_on_lock.lock().unwrap()
-    }
-
-    pub fn set_exit_on_lock(&self, enabled: bool) {
-        *self.exit_on_lock.lock().unwrap() = enabled;
-    }
-
-    pub fn dark_mode(&self) -> bool {
-        *self.dark_mode.lock().unwrap()
-    }
-
-    pub fn set_dark_mode(&self, enabled: bool) {
-        *self.dark_mode.lock().unwrap() = enabled;
-    }
-
-    pub fn enable_notifications(&self) -> bool {
-        *self.enable_notifications.lock().unwrap()
-    }
-
-    pub fn set_enable_notifications(&self, enabled: bool) {
-        *self.enable_notifications.lock().unwrap() = enabled;
-    }
-
-    pub fn post_trigger_action(&self) -> PostTriggerAction {
-        self.post_trigger_action.lock().unwrap().clone()
-    }
-
-    pub fn set_post_trigger_action(&self, action: PostTriggerAction) {
-        *self.post_trigger_action.lock().unwrap() = action;
-    }
-
-    pub fn capture_delay_seconds(&self) -> u32 {
-        *self.capture_delay_seconds.lock().unwrap()
-    }
-
-    pub fn set_capture_delay_seconds(&self, delay: u32) {
-        *self.capture_delay_seconds.lock().unwrap() = delay;
-    }
-
-    pub fn capture_mode(&self) -> CaptureMode {
-        self.capture_mode.lock().unwrap().clone()
-    }
-
-    pub fn set_capture_mode(&self, mode: CaptureMode) {
-        *self.capture_mode.lock().unwrap() = mode;
+        self.shortcuts_disabled.store(disabled, Ordering::SeqCst);
     }
 }
 

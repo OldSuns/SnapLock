@@ -1,4 +1,4 @@
-use crate::process_utils::RecordingProcess;
+use crate::recorder::{RecordingSource, Recordings, recording_command};
 use base64::{Engine as _, engine::general_purpose};
 use image::{ImageBuffer, RgbImage};
 use nokhwa::{
@@ -8,11 +8,8 @@ use nokhwa::{
     utils::{ApiBackend, CameraIndex, CameraInfo, RequestedFormat, RequestedFormatType},
 };
 use serde::Serialize;
-use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Mutex;
 use tauri::{AppHandle, Manager, command};
 
 /// Camera information for frontend
@@ -20,10 +17,6 @@ use tauri::{AppHandle, Manager, command};
 pub struct CameraListItem {
     pub id: u32,
     pub name: String,
-}
-
-lazy_static::lazy_static! {
-    pub static ref VIDEO_PROCESSES: Mutex<HashMap<u32, RecordingProcess>> = Mutex::new(HashMap::new());
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -72,36 +65,6 @@ fn resolve_camera_info(camera_id: u32) -> Result<CameraInfo, String> {
         "Camera ID {} not found. Available camera IDs: {:?}",
         camera_id, available_ids
     ))
-}
-
-fn prune_finished_video_processes(processes: &mut HashMap<u32, RecordingProcess>) {
-    let mut finished_camera_ids = Vec::new();
-
-    for (camera_id, child) in processes.iter_mut() {
-        match child.try_wait() {
-            Ok(None) => {}
-            Ok(Some(status)) => {
-                log::warn!(
-                    "摄像头 {} 的 ffmpeg 录像进程已退出，状态: {:?}",
-                    camera_id,
-                    status
-                );
-                finished_camera_ids.push(*camera_id);
-            }
-            Err(error) => {
-                log::error!(
-                    "检查摄像头 {} 的 ffmpeg 录像进程状态失败: {}",
-                    camera_id,
-                    error
-                );
-                finished_camera_ids.push(*camera_id);
-            }
-        }
-    }
-
-    for camera_id in finished_camera_ids {
-        processes.remove(&camera_id);
-    }
 }
 
 /// A Tauri command that retrieves a list of available cameras with their actual indices.
@@ -302,39 +265,6 @@ pub async fn take_photo(camera_id: u32, save_path: Option<String>) -> Result<Str
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
-use crate::state::AppState;
-
-/// Sets the custom save path for photos.
-#[command]
-pub fn set_save_path(path: String, app_handle: tauri::AppHandle) -> Result<(), String> {
-    let state = app_handle.state::<AppState>();
-    let previous_path = state.save_path();
-    let previous_effective_path = state.get_effective_save_path();
-    let next_path = path.clone();
-
-    crate::config::apply_state_change(
-        &app_handle,
-        move |state| {
-            state.set_save_path(Some(next_path.clone()));
-            if state.save_logs_to_file() {
-                if let Some(logger) = crate::logger::get_logger() {
-                    logger.set_log_file_path(Some(next_path.clone()));
-                }
-            }
-        },
-        move |state| {
-            state.set_save_path(previous_path.clone());
-            if state.save_logs_to_file() {
-                if let Some(logger) = crate::logger::get_logger() {
-                    logger.set_log_file_path(Some(previous_effective_path.clone()));
-                }
-            }
-        },
-    )?;
-
-    Ok(())
-}
-
 /// 检查相机权限
 #[command]
 pub async fn check_camera_permission(camera_id: u32) -> Result<bool, String> {
@@ -414,143 +344,48 @@ pub async fn start_video_recording(
     duration_seconds: Option<u32>,
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        validate_camera_id(camera_id)?;
-
-        {
-            let mut processes = VIDEO_PROCESSES.lock().unwrap();
-            prune_finished_video_processes(&mut processes);
-            if processes.contains_key(&camera_id) {
-                return Err(format!("Camera {} is already recording", camera_id));
-            }
-        }
-
+        let camera_info = validate_camera_id(camera_id)?;
         let base_path = get_save_path(save_path)?;
-        let filepath = crate::media_files::capture_path(&base_path, "snaplock_video_", "mkv");
-
-        let ffmpeg_path = match app_handle.path().resolve(
-            "libs/ffmpeg/bin/ffmpeg.exe",
-            tauri::path::BaseDirectory::Resource,
-        ) {
-            Ok(path) => path,
-            Err(e) => return Err(format!("无法解析ffmpeg路径: {}", e)),
-        };
-
-        let result = try_simple_recording(
-            &ffmpeg_path.to_string_lossy(),
-            camera_id,
-            &filepath,
-            duration_seconds,
-        );
-
-        match result {
-            Ok(mut child) => {
-                if let Err(error) = child.assign_to_job() {
-                    log::error!("无法将摄像头录像进程纳入 Job Object: {}", error);
-                    child.stop("camera ffmpeg");
-                    return Err(error);
-                }
-
-                let mut processes = VIDEO_PROCESSES.lock().unwrap();
-                prune_finished_video_processes(&mut processes);
-                if processes.contains_key(&camera_id) {
-                    child.stop("camera ffmpeg");
-                    return Err(format!("Camera {} is already recording", camera_id));
-                }
-                processes.insert(camera_id, child);
-
-                println!(
-                    "Started video recording for camera {} to: {}",
-                    camera_id,
-                    filepath.display()
-                );
-                Ok(filepath.to_string_lossy().to_string())
-            }
-            Err(e) => Err(format!("Failed to start video recording: {}", e)),
+        let (mut command, filepath) =
+            recording_command(&app_handle, &base_path, "snaplock_video_")?;
+        if cfg!(target_os = "windows") {
+            command
+                .args(["-f", "dshow", "-i"])
+                .arg(format!("video={}", camera_info.human_name()));
+        } else {
+            command
+                .args(["-f", "v4l2", "-i"])
+                .arg(format!("/dev/video{camera_id}"));
         }
+        command
+            .args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "25",
+                "-pix_fmt",
+                "yuv420p",
+                "-t",
+            ])
+            .arg(duration_seconds.unwrap_or(5).to_string())
+            .arg(&filepath);
+        app_handle
+            .state::<Recordings>()
+            .start(RecordingSource::Camera(camera_id), &mut command)?;
+        Ok(filepath.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
-/// 尝试使用简化的录像命令
-fn try_simple_recording(
-    ffmpeg_path: &str,
-    camera_id: u32,
-    filepath: &PathBuf,
-    duration_seconds: Option<u32>,
-) -> Result<RecordingProcess, String> {
-    let duration = duration_seconds.unwrap_or(5);
-    let mut command = Command::new(ffmpeg_path);
-
-    if cfg!(target_os = "windows") {
-        let camera_info = validate_camera_id(camera_id)?;
-        let device_name = camera_info.human_name();
-
-        command
-            .arg("-f")
-            .arg("dshow")
-            .arg("-i")
-            .arg(format!("video={}", device_name))
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg("ultrafast")
-            .arg("-crf")
-            .arg("25")
-            .arg("-pix_fmt")
-            .arg("yuv420p")
-            .arg("-t")
-            .arg(&duration.to_string())
-            .arg(filepath);
-    } else {
-        command
-            .arg("-f")
-            .arg("v4l2")
-            .arg("-i")
-            .arg(format!("/dev/video{}", camera_id))
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg("ultrafast")
-            .arg("-crf")
-            .arg("25")
-            .arg("-pix_fmt")
-            .arg("yuv420p")
-            .arg("-t")
-            .arg(&duration.to_string())
-            .arg(filepath);
-    }
-
-    println!("Trying simple recording command: {:?}", command);
-    crate::process_utils::spawn_recording(&mut command).map_err(|e| {
-        let cmd_str = format!("{:?}", command);
-        format!(
-            "Failed to start ffmpeg process: {}. Command: {}",
-            e, cmd_str
-        )
-    })
-}
-
 /// 停止录像
-pub async fn stop_video_recording() -> Result<(), String> {
+pub async fn stop_video_recording(app_handle: AppHandle) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        let mut processes_guard = VIDEO_PROCESSES.lock().unwrap();
-        prune_finished_video_processes(&mut processes_guard);
-
-        if processes_guard.is_empty() {
-            println!("No active camera recordings to stop");
-            return Ok(());
-        }
-
-        let mut processes = std::mem::take(&mut *processes_guard);
-        drop(processes_guard);
-
-        for (camera_id, mut child) in processes.drain() {
-            println!("Stopping video recording for camera {}", camera_id);
-            child.stop("camera ffmpeg");
-        }
-
-        println!("All video recordings stopped");
+        app_handle
+            .state::<Recordings>()
+            .stop_matching(|source| matches!(source, RecordingSource::Camera(_)));
         Ok(())
     })
     .await

@@ -61,23 +61,22 @@ body {
 }
 
 /* 移除默认样式但保留基础功能 */
-.app-container input,
-.app-container button,
-.app-container select {
+:where(.app-container) input,
+:where(.app-container) button,
+:where(.app-container) select {
   margin: 0;
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
   background: none;
   border: none;
-  outline: none;
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
 }
 
 /* 确保按钮可点击 */
-.app-container button {
+:where(.app-container) button {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -85,13 +84,13 @@ body {
 }
 
 /* 确保输入框可用 */
-.app-container input {
+:where(.app-container) input {
   display: block;
   width: 100%;
 }
 
 /* 确保选择框可用 */
-.app-container select {
+:where(.app-container) select {
   cursor: pointer;
   display: block;
   width: 100%;
