@@ -67,6 +67,8 @@ pub struct AppConfig {
     pub capture_delay_seconds: u32,
     #[serde(default)]
     pub capture_mode: CaptureMode,
+    #[serde(default)]
+    pub capture_on_failed_unlock: bool,
 }
 
 impl Default for AppConfig {
@@ -83,6 +85,7 @@ impl Default for AppConfig {
             default_camera_id: None,
             capture_delay_seconds: 0,
             capture_mode: CaptureMode::Video,
+            capture_on_failed_unlock: false,
         }
     }
 }
@@ -272,6 +275,7 @@ pub enum ConfigChange {
     PostTriggerAction(PostTriggerAction),
     DefaultCameraId(Option<u32>),
     CaptureDelaySeconds(u32),
+    CaptureOnFailedUnlock(bool),
 }
 
 impl ConfigChange {
@@ -311,6 +315,7 @@ impl ConfigChange {
                 }
                 config.capture_delay_seconds = value;
             }
+            Self::CaptureOnFailedUnlock(value) => config.capture_on_failed_unlock = value,
         }
         Ok(())
     }
@@ -325,6 +330,15 @@ pub fn update_config(app_handle: AppHandle, change: ConfigChange) -> Result<AppC
     let mut next = previous.clone();
     let camera_changed = matches!(change, ConfigChange::DefaultCameraId(_));
     change.apply(&mut next)?;
+    // The setting is only saved as enabled once the watcher runs; the watcher itself
+    // stays idle while the saved setting is off, so a later failure needs no rollback.
+    #[cfg(target_os = "windows")]
+    {
+        if next.capture_on_failed_unlock && !previous.capture_on_failed_unlock {
+            crate::failed_unlock::ensure_started(&app_handle)
+                .map_err(|error| format!("无法监听 PIN 解锁失败事件: {error}"))?;
+        }
+    }
     let path = AppConfig::get_config_path().map_err(|error| format!("保存配置失败: {error}"))?;
     let shortcut_changed = previous.shortcut_key != next.shortcut_key;
     if shortcut_changed {
@@ -407,6 +421,10 @@ mod tests {
             serde_json::from_str(r#"{"key":"default_camera_id","value":null}"#).unwrap();
         change.apply(&mut config).unwrap();
         assert_eq!(config.default_camera_id, None);
+        let change: ConfigChange =
+            serde_json::from_str(r#"{"key":"capture_on_failed_unlock","value":true}"#).unwrap();
+        change.apply(&mut config).unwrap();
+        assert!(config.capture_on_failed_unlock);
         for change in [
             ConfigChange::CaptureDelaySeconds(61),
             ConfigChange::ShortcutKey("Alt".into()),
@@ -427,6 +445,7 @@ mod tests {
         );
         assert_eq!(config.capture_delay_seconds, 0);
         assert_eq!(config.capture_mode, CaptureMode::Video);
+        assert!(!config.capture_on_failed_unlock);
     }
 
     #[test]
