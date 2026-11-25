@@ -22,7 +22,9 @@ const WRONG_PIN_QUERY: PCWSTR = w!(
 static STARTED: Mutex<bool> = Mutex::new(false);
 
 enum Signal {
-    WrongPin,
+    /// A PIN was rejected. Holds `is_session_unlocked` as seen when the event arrived,
+    /// because the session may be unlocked again before earlier photos are finished.
+    WrongPin(windows::core::Result<bool>),
     /// Win32 error code reported by the subscription itself.
     SubscriptionError(u32),
 }
@@ -35,7 +37,7 @@ unsafe extern "system" fn on_event(
 ) -> u32 {
     let signals = unsafe { &*context.cast::<mpsc::UnboundedSender<Signal>>() };
     let signal = if action == EvtSubscribeActionDeliver {
-        Signal::WrongPin
+        Signal::WrongPin(session_monitor::is_session_unlocked())
     } else {
         // Error notifications carry a Win32 error code in place of the event handle.
         Signal::SubscriptionError(event.0 as u32)
@@ -82,7 +84,9 @@ pub fn ensure_started(app_handle: &AppHandle) -> windows::core::Result<()> {
     tauri::async_runtime::spawn(async move {
         while let Some(signal) = signals.recv().await {
             match signal {
-                Signal::WrongPin => capture_if_locked(&app_handle).await,
+                Signal::WrongPin(session_unlocked) => {
+                    capture_if_locked(&app_handle, session_unlocked).await
+                }
                 Signal::SubscriptionError(code) => {
                     log::warn!("Windows Hello event subscription reported error {code}")
                 }
@@ -94,15 +98,18 @@ pub fn ensure_started(app_handle: &AppHandle) -> windows::core::Result<()> {
     Ok(())
 }
 
-async fn capture_if_locked(app_handle: &AppHandle) {
+/// `session_unlocked` is the state recorded when the event arrived, not the current one.
+async fn capture_if_locked(app_handle: &AppHandle, session_unlocked: windows::core::Result<bool>) {
     let state = app_handle.state::<AppState>();
     let config = state.config();
     if !config.capture_on_failed_unlock {
         return;
     }
-    match session_monitor::is_session_unlocked() {
+    match session_unlocked {
         // A PIN rejected by a prompt inside the unlocked session is not an unlock attempt.
         Ok(true) => return,
+        // Only a session known to be unlocked is skipped. When the state is unknown or cannot
+        // be queried, an unwanted photo costs less than missing a failed unlock.
         Ok(false) => {}
         Err(error) => log::warn!("Session lock state is unavailable, capturing anyway: {error}"),
     }
