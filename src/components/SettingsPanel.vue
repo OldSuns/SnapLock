@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
 import { desktopDir } from '@tauri-apps/api/path';
 import type { AppConfig } from '../types';
 import type { Settings } from '../composables/useSettings';
@@ -15,6 +16,7 @@ const { config, update } = props.settings;
 const { cameras, selected } = props.camera;
 const error = ref('');
 const busy = ref(false);
+const autostartEnabled = ref<boolean | null>(null);
 const formVersion = ref(0);
 const capturing = ref(false);
 const shortcut = ref(config.value.shortcut_key);
@@ -49,6 +51,22 @@ async function selectPath() {
     const path = await open({ directory: true, multiple: false, defaultPath: displayPath.value, title: '选择保存位置' });
     if (typeof path === 'string' && await save('save_path', path)) displayPath.value = path;
   } catch (cause) { error.value = String(cause); }
+}
+
+async function saveAutostart(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const enabled = input.checked;
+  // Keep the checkbox at the confirmed system state until the operation succeeds.
+  input.checked = autostartEnabled.value ?? false;
+  if (busy.value || autostartEnabled.value === null) return;
+  busy.value = true;
+  error.value = '';
+  try {
+    if (enabled) await enable();
+    else await disable();
+    autostartEnabled.value = enabled;
+  } catch (cause) { error.value = `开机自启动设置失败：${cause}`; }
+  finally { busy.value = false; }
 }
 
 async function startCapture() {
@@ -95,6 +113,8 @@ function saveDelay(event: Event) {
 }
 onMounted(async () => {
   document.addEventListener('keydown', escape);
+  try { autostartEnabled.value = await isEnabled(); }
+  catch (cause) { error.value = `开机自启动状态读取失败：${cause}`; }
   if (!displayPath.value) {
     try { displayPath.value = await desktopDir(); }
     catch (cause) { error.value = String(cause); }
@@ -117,6 +137,11 @@ onUnmounted(() => {
       <div ref="content" class="settings-content">
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <fieldset :key="formVersion" class="settings-fields" :disabled="busy">
+          <div class="setting-item">
+            <div class="setting-label"><span class="setting-icon">🚀</span>启动选项</div>
+            <label class="checkbox-item"><input type="checkbox" :checked="autostartEnabled ?? false" :disabled="autostartEnabled === null" @change="saveAutostart" class="checkbox-input" /><span class="checkbox-label">开机自启动</span></label>
+            <div class="setting-description">登录电脑后自动打开 SnapLock</div>
+          </div>
           <div class="setting-item">
             <label for="shortcut" class="setting-label"><span class="setting-icon">⌨️</span>快捷键</label>
             <div class="shortcut-input-group">

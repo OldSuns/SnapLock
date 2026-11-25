@@ -138,6 +138,7 @@ pub fn update_global_shortcut(app: &AppHandle, old: &str, new: &str) -> Result<(
 
 pub fn setup_tauri_builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
 }
